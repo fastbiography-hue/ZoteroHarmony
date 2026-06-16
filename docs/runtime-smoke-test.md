@@ -68,6 +68,9 @@
 - [ ] App works without login (local-only mode, footer shows "Not connected")
 - [ ] Connection error during sync shows readable error message
 - [ ] Rapid double-tap Sync does not crash
+- [ ] Connect then immediately tap Sync — does NOT show "API key not set"
+- [ ] App cold start: tap Sync immediately — does NOT show "API key not set"
+- [ ] Footer shows "Initializing account…" during auth, Sync button disabled
 
 ## Notes
 

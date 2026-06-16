@@ -64,11 +64,13 @@ struct MainPage {
   @State pendingSyncSummaryText: string = '';
   @State pendingSyncRevision: number = 0;
   @State syncErrorMessage: string = '';
+  @State authReady: boolean = false;
+  @State authLoading: boolean = false;
   private syncRunner: SyncRunner | null = null;
 
   aboutToAppear(): void {
     this.themeMode = AppStore.theme;
-    this._loadAuthState();
+    this._loadAuthState().catch((_err: Error) => {});
     this._refreshPendingSyncState();
   }
 
@@ -77,41 +79,66 @@ struct MainPage {
    * Re-reads auth state so the footer updates immediately.
    */
   onPageShow(): void {
-    this._loadAuthState();
+    this._loadAuthState().catch((_err: Error) => {});
   }
 
   /**
    * Restore login state: AppStore first, then preferences fallback.
+   * Awaits auth init so authReady reflects real state.
    */
-  private _loadAuthState(): void {
+  private async _loadAuthState(): Promise<void> {
     let apiKey = AppStore.currentApiKey;
     if (!apiKey) {
       // Try preferences fallback (app restart scenario)
       let ctx = getContext(this).getApplicationContext();
-      preferences.getPreferences(ctx, 'zotero_preferences').then((prefs) => {
+      try {
+        let prefs = await preferences.getPreferences(ctx, 'zotero_preferences');
         let savedKey = prefs.getSync('apiKey', '') as string;
         let savedUserID = prefs.getSync('userId', '') as string;
         if (savedKey.length > 0) {
           AppStore.currentApiKey = savedKey;
           AppStore.currentUserID = savedUserID;
-          this._initSyncRunner(savedKey);
+          apiKey = savedKey;
         }
-      }).catch((_err: Error) => {});
+      } catch (_err) { /* preferences unavailable */ }
+    }
+    if (!apiKey) {
       this.loggedIn = false;
+      this.authReady = false;
+      this.authLoading = false;
       return;
     }
-    this.loggedIn = true;
-    this._initSyncRunner(apiKey);
+    await this._initSyncRunner(apiKey);
   }
 
-  private _initSyncRunner(apiKey: string): void {
+  /**
+   * Initialize SyncRunner and await loginWithApiKey completion.
+   * This avoids the race where _doSync fires before the API key
+   * is written to SyncLocalState.
+   */
+  private async _initSyncRunner(apiKey: string): Promise<void> {
+    this.authLoading = true;
+    this.authReady = false;
     this.loggedIn = true;
+
     if (!this.syncRunner) {
       this.syncRunner = new SyncRunner('https://api.zotero.org',
         getContext(this).getApplicationContext());
     }
-    this.syncRunner.loginWithApiKey(apiKey);
-    this.syncStatus = 'idle';
+
+    try {
+      await this.syncRunner.loginWithApiKey(apiKey);
+      this.authReady = true;
+      this.syncStatus = 'idle';
+      this.syncErrorMessage = '';
+    } catch (_err) {
+      this.authReady = false;
+      this.loggedIn = false;
+      this.syncStatus = 'error';
+      this.syncErrorMessage = 'Failed to initialize Zotero auth';
+    } finally {
+      this.authLoading = false;
+    }
   }
 
   build() {
@@ -432,30 +459,36 @@ struct MainPage {
           .margin({ right: 6 })
 
         if (this.loggedIn) {
-          // Pending sync count
-          if (this.pendingSyncSummaryText.length > 0) {
-            Text(this.pendingSyncSummaryText)
-              .fontSize(12).fontColor('#E65100')
-              .margin({ right: 12 })
-          }
-          Text(this.syncStatus === 'idle' ? (this.pendingSyncSummaryText.length === 0 ? 'All synced' : 'Ready to sync') :
-            (this.syncStatus === 'checking' ? 'Checking libraries' :
-              (this.syncStatus === 'syncing' ? 'Syncing library' :
-                (this.syncStatus === 'downloading' ? 'Downloading changes' :
-                  (this.syncStatus === 'uploading' ? 'Uploading local changes' :
-                    (this.syncStatus === 'success' ? 'Sync complete' :
-                      (this.syncStatus === 'offline' ? 'Offline' : 'Sync error')))))))
-            .fontSize(12).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
-          if (this.syncErrorMessage.length > 0) {
-            Text(this.syncErrorMessage)
-              .fontSize(11).fontColor('#C62828').maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .margin({ left: 8 })
+          // Auth-in-progress state
+          if (this.authLoading) {
+            Text('Initializing account…')
+              .fontSize(12).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+          } else {
+            // Pending sync count
+            if (this.pendingSyncSummaryText.length > 0) {
+              Text(this.pendingSyncSummaryText)
+                .fontSize(12).fontColor('#E65100')
+                .margin({ right: 12 })
+            }
+            Text(this.syncStatus === 'idle' ? (this.pendingSyncSummaryText.length === 0 ? 'All synced' : 'Ready to sync') :
+              (this.syncStatus === 'checking' ? 'Checking libraries' :
+                (this.syncStatus === 'syncing' ? 'Syncing library' :
+                  (this.syncStatus === 'downloading' ? 'Downloading changes' :
+                    (this.syncStatus === 'uploading' ? 'Uploading local changes' :
+                      (this.syncStatus === 'success' ? 'Sync complete' :
+                        (this.syncStatus === 'offline' ? 'Offline' : 'Sync error')))))))
+              .fontSize(12).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+            if (this.syncErrorMessage.length > 0) {
+              Text(this.syncErrorMessage)
+                .fontSize(11).fontColor('#C62828').maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .margin({ left: 8 })
+            }
           }
           Blank()
           Button('Sync').fontSize(12).height(28)
-            .enabled(this.syncStatus !== 'syncing' && this.syncStatus !== 'checking')
+            .enabled(!this.authLoading && this.syncStatus !== 'syncing' && this.syncStatus !== 'checking')
             .onClick(() => { this._doSync(); })
         } else {
           Text('Not connected').fontSize(12).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
@@ -526,26 +559,33 @@ struct MainPage {
   }
 
   private _doSync(): void {
-    if (!this.loggedIn) {
+    if (this.authLoading) {
+      this.syncStatus = 'checking';
+      this.syncErrorMessage = 'Initializing Zotero account…';
+      return;
+    }
+
+    if (!this.loggedIn || !AppStore.currentApiKey) {
       this.syncStatus = 'error';
       this.syncErrorMessage = 'Not connected — please connect your Zotero account';
       AppStore.syncStatus = 'error';
       return;
     }
-    if (!this.syncRunner) {
-      let apiKey = AppStore.currentApiKey;
-      if (!apiKey) {
+
+    if (!this.authReady || !this.syncRunner) {
+      this._initSyncRunner(AppStore.currentApiKey).then(() => {
+        this._doSync();
+      }).catch((err: Error) => {
         this.syncStatus = 'error';
-        this.syncErrorMessage = 'Not connected — API Key not found';
-        return;
-      }
-      this._initSyncRunner(apiKey);
+        this.syncErrorMessage = err.message || 'Failed to initialize Zotero auth';
+      });
+      return;
     }
-    if (this.syncRunner) {
-      this.syncStatus = 'checking';
-      this.syncErrorMessage = '';
-      AppStore.syncStatus = 'checking';
-      this.syncRunner.sync(false).then((ok: boolean) => {
+
+    this.syncStatus = 'checking';
+    this.syncErrorMessage = '';
+    AppStore.syncStatus = 'checking';
+    this.syncRunner.sync(false).then((ok: boolean) => {
         this.syncStatus = ok ? 'success' : 'error';
         AppStore.syncStatus = this.syncStatus;
         if (!ok && this.syncRunner) {
@@ -563,7 +603,6 @@ struct MainPage {
         this.revision++;
         this._refreshPendingSyncState();
       });
-    }
   }
 
   private _refreshPendingSyncState(): void {
