@@ -18,7 +18,7 @@ import { AttachmentsList, AttachmentEntry } from './AttachmentsList.ets';
 import { NotesList, NoteEntry } from './NotesList.ets';
 import { RelatedItems, RelatedItemRef } from './RelatedItems.ets';
 import { TagChipEditor } from './TagChipEditor.ets';
-import { ZoteroTag } from '../model/ItemTypes.ets';
+import { ZoteroTag, AttachmentLinkMode } from '../model/ItemTypes.ets';
 import { ZHColor, ZHMetric } from '../theme/ThemeConstants.ets';
 import { readerManager } from '../reader/ReaderManager.ets';
 import { LibraryRepository } from '../database/LibraryRepository.ets';
@@ -45,6 +45,15 @@ export struct ItemPaneView {
   @State selectedNoteID: number = 0;
   @State selectedNoteTitle: string = '';
   @State selectedNoteText: string = '';
+  @State noteLoaded: boolean = false;
+  // Attachment draft fields
+  @State attachTitle: string = '';
+  @State attachContentType: string = '';
+  @State attachPath: string = '';
+  @State attachUrl: string = '';
+  @State attachIsDirty: boolean = false;
+  @State attachSaveStatus: 'idle' | 'dirty' | 'success' | 'error' = 'idle';
+  @State attachSaveMessage: string = '';
   @Watch('_refreshFromStore')
   @StorageLink('zotero_libraryRevision') libraryRevision: number = 0;
   onItemSaved?: () => void;
@@ -56,9 +65,45 @@ export struct ItemPaneView {
   private _reload(): void {
     this.abstractText = this.item.itemData.get('abstractNote') ?? '';
     this.tags = [...this.item.tags];
-    this._loadAttachments();
-    this._loadNotes();
-    this._loadRelated();
+    if (this.item.isAttachment()) {
+      this._initAttachmentDraft();
+    } else if (this.item.isNote()) {
+      this._loadNoteForChild();
+    } else {
+      this._loadAttachments();
+      this._loadNotes();
+      this._loadRelated();
+    }
+  }
+
+  /** If a note child item is selected, auto-load its body. */
+  private _loadNoteForChild(): void {
+    let noteKey = this.item.key ?? '';
+    if (noteKey.length === 0) { return; }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.getNoteByKey(noteKey);
+    }).then((n) => {
+      if (n) {
+        this.selectedNoteID = n.id;
+        this.selectedNoteTitle = n.title || this.item.displayTitle || '';
+        this.selectedNoteText = n.noteText;
+        this.noteLoaded = true;
+        this.selectedView = 'note';
+      }
+      repo.close();
+    }).catch((_err: Error) => { repo.close(); });
+  }
+
+  /** Init attachment metadata draft from current item. */
+  private _initAttachmentDraft(): void {
+    this.attachTitle = this.item.itemData.get('title') ?? '';
+    this.attachContentType = this.item.attachmentContentType ?? '';
+    this.attachPath = this.item.attachmentPath ?? '';
+    this.attachUrl = this.item.itemData.get('url') ?? '';
+    this.attachIsDirty = false;
+    this.attachSaveStatus = 'idle';
+    this.attachSaveMessage = '';
   }
 
   private reloadContent(): void {
@@ -70,6 +115,88 @@ export struct ItemPaneView {
   }
 
   build() {
+    // ---- Attachment child item detail form ----
+    if (this.item.isAttachment()) {
+      Column() {
+        this._itemHeader()
+        Scroll() {
+          Column() {
+            this._sectionHeader('ATTACHMENT METADATA')
+            this._readOnlyRow('Link Mode', this._linkModeLabel(this.item.attachmentLinkMode))
+            this._readOnlyRow('Parent Item', this.item.parentKey ?? '(none)')
+            this._editRow('Title', this.attachTitle, (v: string) => { this.attachTitle = v; this.attachIsDirty = true; })
+            this._editRow('Content Type', this.attachContentType, (v: string) => { this.attachContentType = v; this.attachIsDirty = true; })
+            this._editRow('Path', this.attachPath, (v: string) => { this.attachPath = v; this.attachIsDirty = true; })
+            this._editRow('URL', this.attachUrl, (v: string) => { this.attachUrl = v; this.attachIsDirty = true; })
+            Blank().height(20)
+            // Status bar
+            Row() {
+              if (this.attachSaveStatus === 'success') {
+                Text(this.attachSaveMessage).fontSize(11).fontColor('#2E7D32').layoutWeight(1)
+              } else if (this.attachSaveStatus === 'error') {
+                Text(this.attachSaveMessage).fontSize(11).fontColor('#C62828').layoutWeight(1)
+              } else if (this.attachIsDirty) {
+                Text('Unsaved changes').fontSize(11).fontColor(ZHColor.WARNING).layoutWeight(1)
+              } else { Blank().layoutWeight(1) }
+              Button('Reset').fontSize(11).height(28).margin({ right: 6 })
+                .enabled(this.attachIsDirty).onClick(() => { this._initAttachmentDraft(); })
+              Button('Open').fontSize(11).height(28).margin({ right: 6 })
+                .backgroundColor(ZHColor.SURFACE_ALT).fontColor(ZHColor.TEXT)
+                .onClick(() => {
+                  let filePath = this.attachPath.length > 0 ? this.attachPath :
+                    (this.attachUrl.length > 0 ? this.attachUrl : '');
+                  let title = this.attachTitle || this.item.itemData.get('title') || 'Attachment';
+                  readerManager.open(this.item.id ?? 0, this.item.key ?? '', title, filePath, 1);
+                  router.pushUrl({ url: 'reader/ReaderPage', params: { itemKey: this.item.key ?? '' } });
+                })
+              Button('Save').fontSize(11).height(28)
+                .enabled(this.attachIsDirty).backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+                .onClick(() => { this._saveAttachment(); })
+              Button('Delete').fontSize(11).height(28).margin({ left: 6 })
+                .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
+                .onClick(() => { this._deleteCurrentAttachment(); })
+            }
+            .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+          }
+        }
+        .layoutWeight(1).scrollBar(BarState.Auto)
+      }
+      .width('100%').height('100%').backgroundColor(ZHColor.SURFACE)
+      return
+    }
+
+    // ---- Note child item editor ----
+    if (this.item.isNote() && this.noteLoaded) {
+      Column() {
+        this._itemHeader()
+        Column() {
+          TextInput({ placeholder: 'Note title', text: this.selectedNoteTitle })
+            .fontSize(15).height(38)
+            .margin({ left: 12, right: 12, top: 10, bottom: 8 })
+            .onChange((value: string) => { this.selectedNoteTitle = value; })
+          AbstractEditor({
+            label: 'NOTE',
+            text: this.selectedNoteText,
+            minHeight: 220,
+            onChange: (v: string) => { this.selectedNoteText = v; },
+          })
+          Row() {
+            Button('Save Note').fontSize(12).height(32)
+              .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+              .onClick(() => { this._saveNoteForChild(); })
+            Button('Delete Note').fontSize(12).height(32).margin({ left: 8 })
+              .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
+              .onClick(() => { this._deleteCurrentNote(); })
+          }
+          .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+        }
+        .layoutWeight(1)
+      }
+      .width('100%').height('100%').backgroundColor(ZHColor.SURFACE)
+      return
+    }
+
+    // ---- Default regular item pane ----
     Row() {
       Column() {
         this._sidenavButton('details', 'Info')
@@ -291,6 +418,114 @@ export struct ItemPaneView {
       .margin({ bottom: 4 })
       .onClick(() => { this.selectedView = view; })
   }
+
+  // ---- Attachment child-item helpers ----
+
+  private _saveAttachment(): void {
+    let itemKey = this.item.key ?? '';
+    if (itemKey.length === 0) { return; }
+    this.attachSaveStatus = 'dirty';
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.updateAttachmentMetadataByKey(itemKey, this.attachTitle,
+        this.attachContentType, this.attachPath, this.attachUrl);
+    }).then(() => {
+      repo.close();
+      // Update item model in place
+      this.item.attachmentContentType = this.attachContentType;
+      this.item.attachmentPath = this.attachPath;
+      this.item.itemData.set('title', this.attachTitle);
+      this.item.itemData.set('url', this.attachUrl);
+      this.attachIsDirty = false;
+      this.attachSaveStatus = 'success';
+      this.attachSaveMessage = 'Saved locally, pending sync';
+      if (this.onItemSaved) { this.onItemSaved(); }
+    }).catch((err: Error) => {
+      repo.close();
+      this.attachSaveStatus = 'error';
+      this.attachSaveMessage = 'Save failed: ' + err.message;
+    });
+  }
+
+  private _deleteCurrentAttachment(): void {
+    let itemKey = this.item.key ?? '';
+    if (itemKey.length === 0) { return; }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.deleteAttachment(itemKey);
+    }).then(() => {
+      repo.close();
+      if (this.onItemSaved) { this.onItemSaved(); }
+    }).catch((_err: Error) => { repo.close(); });
+  }
+
+  private _saveNoteForChild(): void {
+    let noteKey = this.item.key ?? '';
+    if (noteKey.length === 0 || this.selectedNoteID === 0) { return; }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.updateNoteByKey(noteKey, this.selectedNoteTitle, this.selectedNoteText);
+    }).then(() => {
+      repo.close();
+      this.item.displayTitle = this.selectedNoteTitle;
+      this.item.noteText = this.selectedNoteText;
+      if (this.onItemSaved) { this.onItemSaved(); }
+    }).catch((_err: Error) => { repo.close(); });
+  }
+
+  private _deleteCurrentNote(): void {
+    if (this.selectedNoteID === 0) { return; }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.deleteNote(this.selectedNoteID);
+    }).then(() => {
+      repo.close();
+      this.selectedNoteID = 0;
+      this.selectedNoteTitle = '';
+      this.selectedNoteText = '';
+      if (this.onItemSaved) { this.onItemSaved(); }
+    }).catch((_err: Error) => { repo.close(); });
+  }
+
+  @Builder
+  _readOnlyRow(label: string, value: string) {
+    Row() {
+      Text(label).fontSize(11).fontColor('#888').width(90)
+      Text(value).fontSize(14).fontColor(ZHColor.TEXT).layoutWeight(1)
+    }
+    .width('100%').padding({ left: 14, right: 14, top: 6, bottom: 6 })
+    .border({ width: { bottom: 0.5 }, color: '#EEEEEE' })
+  }
+
+  @Builder
+  _editRow(label: string, value: string, onChange: (v: string) => void) {
+    Row() {
+      Text(label).fontSize(11).fontColor('#888').width(90)
+      TextInput({ text: value }).fontSize(14).layoutWeight(1).height(36)
+        .onChange(onChange)
+    }
+    .width('100%').padding({ left: 14, right: 14, top: 6, bottom: 6 })
+    .border({ width: { bottom: 0.5 }, color: '#EEEEEE' })
+  }
+
+  @Builder
+  _sectionHeader(title: string) {
+    Text(title)
+      .fontSize(12).fontColor('#999').fontWeight(FontWeight.Bold).width('100%')
+      .padding({ left: 14, top: 12, bottom: 4 })
+  }
+
+  private _linkModeLabel(mode: AttachmentLinkMode | null): string {
+    if (mode === null) { return 'unknown'; }
+    if (mode === AttachmentLinkMode.IMPORTED_FILE) { return 'Imported File'; }
+    if (mode === AttachmentLinkMode.IMPORTED_URL) { return 'Imported URL'; }
+    if (mode === AttachmentLinkMode.LINKED_FILE) { return 'Linked File'; }
+    if (mode === AttachmentLinkMode.LINKED_URL) { return 'Linked URL'; }
+    if (mode === AttachmentLinkMode.EMBEDDED_IMAGE) { return 'Embedded Image'; }
+    return 'unknown';
+  }
+
+  // ---- Regular item helpers ----
 
   private _saveTags(tags: ZoteroTag[]): void {
     this.item.tags = tags;

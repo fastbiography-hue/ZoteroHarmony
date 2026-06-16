@@ -250,6 +250,7 @@ struct MainPage {
                 this.selectedItemKey = item.key ?? '';
                 this.selectedItemKeys = [this.selectedItemKey];
                 this.currentItem = item;
+                this.selectedView = 'details'; // attachment detail form in ItemPaneView
                 if (item.isAttachment()) {
                   this._executeCommand(ZoteroCommands.OPEN_READER);
                 }
@@ -259,23 +260,25 @@ struct MainPage {
                 this.selectedItemKey = item.key ?? '';
                 this.selectedItemKeys = [this.selectedItemKey];
                 this.currentItem = item;
-                this.selectedView = 'notes';
-                // TODO: open note editor when full note editing is implemented
+                this.selectedView = 'note'; // triggers note editor in ItemPaneView
                 return;
               }
               if (action === 'deleteChild') {
                 this.selectedItemKey = item.key ?? '';
                 this.selectedItemKeys = [this.selectedItemKey];
                 this.currentItem = item;
-                this._executeCommand(ZoteroCommands.DELETE);
+                if (item.isNote() || item.isAttachment()) {
+                  this._executeCommand(ZoteroCommands.DELETE);
+                }
+                this.revision++;
                 return;
               }
               if (action === 'openAnnotation') {
                 this.selectedItemKey = item.key ?? '';
                 this.selectedItemKeys = [this.selectedItemKey];
                 this.currentItem = item;
-                // TODO: navigate to Reader annotation position
-                this._executeCommand(ZoteroCommands.OPEN_READER);
+                this.selectedView = 'annotations'; // placeholder for annotation view
+                // TODO: navigate to Reader annotation position when reader supports it
                 return;
               }
             },

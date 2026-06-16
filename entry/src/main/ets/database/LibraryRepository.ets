@@ -661,6 +661,70 @@ export class LibraryRepository {
     await this.moveItemToTrash(itemKey);
   }
 
+  /** Update a note by its item key.  Writes itemNotes + syncQueue. */
+  async updateNoteByKey(noteKey: string, title: string, noteText: string): Promise<void> {
+    let noteID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [noteKey]
+    ));
+    if (noteID === 0) { return; }
+    await this.updateNote(noteID, title, noteText);
+  }
+
+  /** Read note body by item key.  Returns id/key/title/noteText or null. */
+  async getNoteByKey(noteKey: string): Promise<{ id: number; key: string; title: string; noteText: string } | null> {
+    let rows = await this.db.queryAsync(
+      `SELECT i.itemID, i.key, n.title, n.note
+       FROM itemNotes n JOIN items i ON i.itemID = n.itemID
+       WHERE i.libraryID = 1 AND i.key = ?`,
+      [noteKey]
+    );
+    if (rows.length === 0) { return null; }
+    return {
+      id: this.toNumber(rows[0]['itemID']),
+      key: this.toString(rows[0]['key'], noteKey),
+      title: this.toString(rows[0]['title'], ''),
+      noteText: this.toString(rows[0]['note'], ''),
+    };
+  }
+
+  /** Update attachment metadata by key.  Writes itemAttachments + itemData + syncQueue. */
+  async updateAttachmentMetadataByKey(
+    itemKey: string, title: string, contentType: string, path: string, url: string
+  ): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      // itemData fields
+      if (title.length > 0) {
+        await this.putItemField(itemID, 'title', title);
+      } else {
+        let fieldID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT fieldID FROM fields WHERE fieldName = 'title'`
+        ));
+        if (fieldID > 0) {
+          await this.db.executeSql(`DELETE FROM itemData WHERE itemID = ? AND fieldID = ?`, [itemID, fieldID]);
+        }
+      }
+      if (url.length > 0) {
+        await this.putItemField(itemID, 'url', url);
+      }
+      // itemAttachments
+      await this.db.executeSql(
+        `UPDATE itemAttachments SET contentType = ?, path = ?
+         WHERE itemID = ?`,
+        [contentType, path, itemID]
+      );
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now'),
+         dateModified = datetime('now') WHERE itemID = ?`,
+        [itemID]
+      );
+    });
+    await this.addToSyncQueue(1, 'item', [itemKey]);
+  }
+
   async createLinkedUrlAttachment(parentItemKey: string, url: string): Promise<string> {
     let parentID = this.toNumber(await this.db.valueQueryAsync(
       `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [parentItemKey]

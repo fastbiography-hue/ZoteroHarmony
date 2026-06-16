@@ -245,9 +245,14 @@ export struct ItemDetailsForm {
     if (!dirty) {
       dirty = !creatorsJsonEqual(this.initialCreatorsJson, this.creators);
     }
+    if (!dirty) {
+      dirty = !tagsJsonEqual(this.initialTagsJson, this.tags);
+    }
     this.isDirty = dirty;
     if (dirty && this.saveStatus === 'idle') {
       this.saveStatus = 'dirty';
+    } else if (!dirty && this.saveStatus === 'dirty') {
+      this.saveStatus = 'idle';
     }
   }
 
