@@ -14,7 +14,7 @@ import { ZoteroDb } from './ZoteroDb.ets';
  * Core Zotero SQLite schema — CREATE TABLE statements.
  * Ref: schema.js:2783-3077  per-step DDL
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const CORE_TABLES: string[] = [
   // Ref: schema.js:2783
@@ -217,6 +217,28 @@ export const CORE_TABLES: string[] = [
     PRIMARY KEY (setting, libraryID),
     FOREIGN KEY (libraryID) REFERENCES libraries(libraryID) ON DELETE CASCADE
   )`,
+  // Sync queue — persistent local-change queue for upload
+  `CREATE TABLE IF NOT EXISTS syncQueue (
+    libraryID INT NOT NULL,
+    objectType TEXT NOT NULL,
+    key TEXT NOT NULL,
+    operation TEXT NOT NULL DEFAULT 'upsert',
+    tries INT NOT NULL DEFAULT 0,
+    lastTryTimestamp INT NOT NULL DEFAULT 0,
+    dateAdded TEXT NOT NULL DEFAULT (datetime('now')),
+    dateModified TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (libraryID, objectType, key, operation),
+    FOREIGN KEY (libraryID) REFERENCES libraries(libraryID) ON DELETE CASCADE
+  )`,
+  // Sync delete log — persistent deletion tracking for upload
+  `CREATE TABLE IF NOT EXISTS syncDeleteLog (
+    libraryID INT NOT NULL,
+    objectType TEXT NOT NULL,
+    key TEXT NOT NULL,
+    dateDeleted TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (libraryID, objectType, key),
+    FOREIGN KEY (libraryID) REFERENCES libraries(libraryID) ON DELETE CASCADE
+  )`,
   // Version tracker
   `CREATE TABLE IF NOT EXISTS version (
     schema TEXT PRIMARY KEY,
@@ -240,8 +262,6 @@ export async function migrate(db: ZoteroDb): Promise<void> {
 
   if (currentVersion < 2) {
     // v1 → v2: add creatorTypes table + itemCreators.creatorTypeID column.
-    // By now CORE_TABLES has already created itemCreators (fresh/v2) or
-    // left the existing table untouched (v1), so columnExists is safe.
     await db.executeSql(
       `CREATE TABLE IF NOT EXISTS creatorTypes (
         creatorTypeID INTEGER PRIMARY KEY,
@@ -253,6 +273,33 @@ export async function migrate(db: ZoteroDb): Promise<void> {
         `ALTER TABLE itemCreators ADD COLUMN creatorTypeID INT NOT NULL DEFAULT 1`
       );
     }
+  }
+
+  if (currentVersion < 3) {
+    // v2 → v3: add syncQueue + syncDeleteLog tables.
+    // CORE_TABLES already created them for fresh DBs; idempotent for upgrades.
+    await db.executeSql(
+      `CREATE TABLE IF NOT EXISTS syncQueue (
+        libraryID INT NOT NULL,
+        objectType TEXT NOT NULL,
+        key TEXT NOT NULL,
+        operation TEXT NOT NULL DEFAULT 'upsert',
+        tries INT NOT NULL DEFAULT 0,
+        lastTryTimestamp INT NOT NULL DEFAULT 0,
+        dateAdded TEXT NOT NULL DEFAULT (datetime('now')),
+        dateModified TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (libraryID, objectType, key, operation)
+      )`
+    );
+    await db.executeSql(
+      `CREATE TABLE IF NOT EXISTS syncDeleteLog (
+        libraryID INT NOT NULL,
+        objectType TEXT NOT NULL,
+        key TEXT NOT NULL,
+        dateDeleted TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (libraryID, objectType, key)
+      )`
+    );
   }
 
   // Phase 3: seed metadata (idempotent INSERT OR IGNORE).

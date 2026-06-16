@@ -360,6 +360,10 @@ export class LibraryRepository {
         annotation.dateModified,
       ]
     );
+    // TODO: when annotations become first-class Zotero items, check
+    // if annotation.id maps to an items.key and enqueue that key.
+    // For now, enqueue the parent attachment so its metadata stays in sync.
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async deleteAnnotation(itemKey: string, annotationID: string): Promise<void> {
@@ -373,6 +377,10 @@ export class LibraryRepository {
       `DELETE FROM itemAnnotations WHERE parentItemID = ? AND annotationID = ?`,
       [itemID, annotationID]
     );
+    // TODO: when annotations become first-class items, check
+    // if annotationID maps to an items.key and addToDeleteLog for it.
+    // For now, enqueue the parent attachment for sync.
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   private async ensureStarterData(): Promise<void> {
@@ -434,6 +442,7 @@ export class LibraryRepository {
         [name, parentID, key]
       );
     }
+    await this.addToSyncQueue(1, 'collection', [key]);
     return key;
   }
 
@@ -452,6 +461,7 @@ export class LibraryRepository {
       `UPDATE collections SET collectionName = ?, synced = 0 WHERE collectionID = ?`,
       [newName.trim(), collectionID]
     );
+    await this.addToSyncQueue(1, 'collection', [collectionKey]);
   }
 
   async deleteCollection(collectionKey: string): Promise<void> {
@@ -469,6 +479,9 @@ export class LibraryRepository {
       await this.db.executeSql(`DELETE FROM collectionItems WHERE collectionID = ?`, [collectionID]);
       await this.db.executeSql(`DELETE FROM collections WHERE collectionID = ?`, [collectionID]);
     });
+    // TODO: if collection was created locally and never synced, we could
+    // remove from syncQueue instead of adding to deleteLog.
+    await this.addToDeleteLog(1, 'collection', [collectionKey]);
   }
 
   async renameSavedSearch(searchKey: string, newName: string): Promise<void> {
@@ -486,6 +499,7 @@ export class LibraryRepository {
       `UPDATE savedSearches SET savedSearchName = ?, clientDateModified = datetime('now'), synced = 0 WHERE savedSearchID = ?`,
       [newName.trim(), savedSearchID]
     );
+    await this.addToSyncQueue(1, 'search', [searchKey]);
   }
 
   async deleteSavedSearch(searchKey: string): Promise<void> {
@@ -503,6 +517,7 @@ export class LibraryRepository {
       await this.db.executeSql(`DELETE FROM savedSearchConditions WHERE savedSearchID = ?`, [savedSearchID]);
       await this.db.executeSql(`DELETE FROM savedSearches WHERE savedSearchID = ?`, [savedSearchID]);
     });
+    await this.addToDeleteLog(1, 'search', [searchKey]);
   }
 
   async createItem(collectionKey: string | null, itemType: string, title: string): Promise<string> {
@@ -535,6 +550,7 @@ export class LibraryRepository {
       await this.putItemField(itemID, 'itemType', itemType);
       await this.putItemField(itemID, 'date', `${new Date().getFullYear()}`);
     });
+    await this.addToSyncQueue(1, 'item', [key]);
     return key;
   }
 
@@ -598,6 +614,7 @@ export class LibraryRepository {
       await this.putItemField(itemID, 'note', noteText);
       await this.putItemField(itemID, 'itemType', 'note');
     });
+    await this.addToSyncQueue(1, 'item', [key]);
     return key;
   }
 
@@ -621,6 +638,7 @@ export class LibraryRepository {
         [noteID]
       );
     });
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async deleteNote(noteID: number): Promise<void> {
@@ -663,6 +681,7 @@ export class LibraryRepository {
       await this.putItemField(itemID, 'url', url);
       await this.putItemField(itemID, 'itemType', 'attachment');
     });
+    await this.addToSyncQueue(1, 'item', [key]);
     return key;
   }
 
@@ -705,6 +724,7 @@ export class LibraryRepository {
       await this.putItemField(itemID, 'path', stored.localPath);
       await this.putItemField(itemID, 'itemType', 'attachment');
     });
+    await this.addToSyncQueue(1, 'item', [key]);
     return key;
   }
 
@@ -758,6 +778,7 @@ export class LibraryRepository {
         );
       }
     });
+    await this.addToSyncQueue(1, 'search', [key]);
     return key;
   }
 
@@ -819,6 +840,7 @@ export class LibraryRepository {
        WHERE itemID = ?`,
       [itemID]
     );
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async replaceItemTags(itemKey: string, tags: ZoteroTag[]): Promise<void> {
@@ -847,6 +869,7 @@ export class LibraryRepository {
         [itemID]
       );
     });
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async listItemCollectionKeys(itemKey: string): Promise<string[]> {
@@ -896,6 +919,7 @@ export class LibraryRepository {
         }
       }
     });
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async listRelatedItems(itemKey: string): Promise<RelatedItemRef[]> {
@@ -1028,6 +1052,7 @@ export class LibraryRepository {
         );
       }
     });
+    await this.addToSyncQueue(1, 'item', itemKeys);
   }
 
   async mergeItems(itemKeys: string[]): Promise<string | null> {
@@ -1141,6 +1166,8 @@ export class LibraryRepository {
         [itemID]
       );
     });
+    // TODO: distinguish trash (item upsert) from permanent-delete (deleteLog)
+    await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 
   async moveItemsToTrash(itemKeys: string[]): Promise<void> {
@@ -1165,6 +1192,7 @@ export class LibraryRepository {
         );
       });
     }
+    await this.addToSyncQueue(1, 'item', itemKeys);
   }
 
   async upsertRemoteObject(objectType: RemoteObjectType, object: Record<string, Object>, libraryID: number = 1): Promise<void> {
@@ -1207,6 +1235,125 @@ export class LibraryRepository {
         );
       }
     }
+  }
+
+  // ==================================================================
+  // Sync Queue / Delete Log — persistent local-change tracking
+  // ==================================================================
+
+  /**
+   * Enqueue local upserts.  Called by create/update methods.
+   * Only call from LOCAL mutation methods — NEVER from remote upsert methods.
+   */
+  async addToSyncQueue(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<void> {
+    if (keys.length === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < keys.length; i++) {
+        await this.db.executeSql(
+          `INSERT OR REPLACE INTO syncQueue
+           (libraryID, objectType, key, operation, tries, lastTryTimestamp,
+            dateAdded, dateModified)
+           VALUES (
+             ?, ?, ?, 'upsert', 0, 0,
+             COALESCE((SELECT dateAdded FROM syncQueue
+                       WHERE libraryID = ? AND objectType = ? AND key = ? AND operation = 'upsert'),
+                      datetime('now')),
+             datetime('now')
+           )`,
+          [libraryID, objectType, keys[i], libraryID, objectType, keys[i]]
+        );
+      }
+    });
+  }
+
+  /** Remove keys from the sync queue (after successful upload). */
+  async removeFromSyncQueue(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<void> {
+    if (keys.length === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < keys.length; i++) {
+        await this.db.executeSql(
+          `DELETE FROM syncQueue
+           WHERE libraryID = ? AND objectType = ? AND key = ? AND operation = 'upsert'`,
+          [libraryID, objectType, keys[i]]
+        );
+      }
+    });
+  }
+
+  /** Return all queued upsert keys for a given library+objectType. */
+  async getAllObjectsInQueue(libraryID: number, objectType: RemoteObjectType): Promise<string[]> {
+    let rows = await this.db.queryAsync(
+      `SELECT key FROM syncQueue
+       WHERE libraryID = ? AND objectType = ? AND operation = 'upsert'
+       ORDER BY dateAdded`,
+      [libraryID, objectType]
+    );
+    let keys: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      keys.push(this.toString(rows[i]['key'], ''));
+    }
+    return keys;
+  }
+
+  /** Record local deletions for upload.  Also removes from syncQueue. */
+  async addToDeleteLog(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<void> {
+    if (keys.length === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < keys.length; i++) {
+        // Remove any pending upsert for the same object (avoid upload-then-delete)
+        await this.db.executeSql(
+          `DELETE FROM syncQueue
+           WHERE libraryID = ? AND objectType = ? AND key = ?`,
+          [libraryID, objectType, keys[i]]
+        );
+        await this.db.executeSql(
+          `INSERT OR REPLACE INTO syncDeleteLog
+           (libraryID, objectType, key, dateDeleted)
+           VALUES (?, ?, ?, datetime('now'))`,
+          [libraryID, objectType, keys[i]]
+        );
+      }
+    });
+  }
+
+  /** Return keys currently in the delete log. */
+  async getDeleted(libraryID: number, objectType: RemoteObjectType): Promise<string[]> {
+    let rows = await this.db.queryAsync(
+      `SELECT key FROM syncDeleteLog
+       WHERE libraryID = ? AND objectType = ?
+       ORDER BY dateDeleted`,
+      [libraryID, objectType]
+    );
+    let keys: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      keys.push(this.toString(rows[i]['key'], ''));
+    }
+    return keys;
+  }
+
+  /** Remove keys from the delete log (after upload confirmed). */
+  async removeFromDeleteLog(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<void> {
+    if (keys.length === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < keys.length; i++) {
+        await this.db.executeSql(
+          `DELETE FROM syncDeleteLog
+           WHERE libraryID = ? AND objectType = ? AND key = ?`,
+          [libraryID, objectType, keys[i]]
+        );
+      }
+    });
+  }
+
+  /** Check if there are any pending local changes. */
+  async hasPendingLocalChanges(libraryID: number): Promise<boolean> {
+    let qCount = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM syncQueue WHERE libraryID = ?`, [libraryID]
+    ));
+    let dCount = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM syncDeleteLog WHERE libraryID = ?`, [libraryID]
+    ));
+    return qCount > 0 || dCount > 0;
   }
 
   private async insertStarterItem(title: string, creator: string, itemType: string, date: string, publisher: string, collectionID: number): Promise<void> {

@@ -31,11 +31,17 @@ export const SYNC_QUEUE_INTERVALS_MS: number[] = [
 ];
 
 /**
- * In-memory sync state manager.
+ * In-memory sync state manager — runtime retry & cache layer.
  *
- * Manages: API key, sync queue, delete log, unsynced tracking, last-sync timestamp.
- * In the full implementation, queue/log persist to DB; this version is in-memory
- * for initial integration testing.
+ * Manages: API key, retry queue, download cache, last-sync timestamp.
+ *
+ * Persistence boundary:
+ *   - The authoritative local change queue (`syncQueue`) and delete log
+ *     (`syncDeleteLog`) are now SQLite-backed via LibraryRepository.
+ *   - This class retains its role as an in-memory retry tracker and
+ *     download-object cache used by SyncEngine.
+ *   - When SyncEngine._startUpload() is implemented, it should read from
+ *     LibraryRepository's persistent syncQueue / syncDeleteLog, not from here.
  *
  * Ref: syncLocal.js:30-88
  */
