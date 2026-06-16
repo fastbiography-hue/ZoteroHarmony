@@ -24,9 +24,15 @@ import { zoteroCommandRegistry } from '../commands/ZoteroCommandRegistry.ets';
 import { ZoteroCommandContext, ZoteroCommands } from '../commands/ZoteroCommands.ets';
 import { preferences } from '@kit.ArkData';
 import { LibraryRepository, PendingSyncSummary } from '../database/LibraryRepository.ets';
+import { IdentifierLookup } from '../import/IdentifierLookup.ets';
 
 /** Tab/page index for phone mode navigation. */
 enum PhoneView { COLLECTIONS, ITEMS, DETAIL }
+
+const ITEM_TYPE_OPTIONS: [string, string][] = [
+  ['Journal', 'journalArticle'], ['Book', 'book'], ['Book Sect.', 'bookSection'],
+  ['Conf.', 'conferencePaper'], ['Thesis', 'thesis'], ['Report', 'report'], ['Web Page', 'webpage'],
+];
 
 function formatPendingSyncSummary(summary: PendingSyncSummary): string {
   let total = summary.queueCount + summary.deleteCount;
@@ -56,9 +62,18 @@ struct MainPage {
   @State collectionDialogVisible: boolean = false;
   @State collectionDialogTitle: string = '';
   @State collectionDialogValue: string = '';
+  @State collectionDialogError: string = '';
   @State collectionDialogMode: string = '';
   @State collectionDialogTargetKey: string = '';
   @State collectionDialogTargetType: string = '';
+  // New Item dialog
+  @State newItemDialogVisible: boolean = false;
+  @State newItemDialogType: string = 'journalArticle';
+  @State newItemDialogTitle: string = '';
+  // Add by Identifier dialog
+  @State identifierDialogVisible: boolean = false;
+  @State identifierDialogText: string = '';
+  @State identifierDialogError: string = '';
   @StorageLink('zotero_theme') themeMode: string = 'light';
   @State pendingSyncMap: Record<string, boolean> = {};
   @State pendingSyncSummaryText: string = '';
@@ -173,7 +188,7 @@ struct MainPage {
         Button('+').fontSize(20).width(ZHMetric.HIT_TARGET).height(ZHMetric.HIT_TARGET)
           .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE).borderRadius(20)
           .margin({ right: 6 })
-          .onClick(() => { this._executeCommand(ZoteroCommands.NEW_ITEM); })
+          .onClick(() => { this.newItemDialogVisible = true; })
 
         Button('Import').fontSize(12).height(36)
           .margin({ right: 6 })
@@ -185,7 +200,7 @@ struct MainPage {
           .margin({ right: 6 })
           .backgroundColor(this.themeMode === 'dark' ? '#242A33' : ZHColor.SURFACE_ALT)
           .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
-          .onClick(() => { this._executeCommand(ZoteroCommands.ADD_BY_IDENTIFIER); })
+          .onClick(() => { this.identifierDialogVisible = true; })
 
         Button('Note').fontSize(12).height(36)
           .margin({ right: 6 })
@@ -228,7 +243,14 @@ struct MainPage {
               .height(30)
               .backgroundColor(ZHColor.TRANSPARENT)
               .fontColor(ZHColor.TEXT_MUTED)
-              .onClick(() => { this._executeCommand(ZoteroCommands.NEW_COLLECTION); })
+              .onClick(() => {
+                this.collectionDialogMode = 'new';
+                this.collectionDialogTargetKey = '';
+                this.collectionDialogTitle = 'New Collection';
+                this.collectionDialogValue = '';
+                this.collectionDialogError = '';
+                this.collectionDialogVisible = true;
+              })
           }
           .width('100%')
           .height(ZHMetric.HEADER_HEIGHT)
@@ -513,16 +535,20 @@ struct MainPage {
               .fontWeight(FontWeight.Medium)
               .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
               .margin({ bottom: 10 })
-            TextInput({ placeholder: 'Name', text: this.collectionDialogValue })
+            TextInput({ placeholder: 'Collection name', text: this.collectionDialogValue })
               .fontSize(14)
               .height(38)
               .width('100%')
               .onChange((value: string) => { this.collectionDialogValue = value; })
+            if (this.collectionDialogError.length > 0) {
+              Text(this.collectionDialogError)
+                .fontSize(12).fontColor('#C62828').margin({ top: 6 })
+            }
             Row() {
               Button('Cancel').fontSize(12).height(32)
                 .onClick(() => { this.collectionDialogVisible = false; })
               Blank()
-              Button('OK').fontSize(12).height(32)
+              Button('Create').fontSize(12).height(32)
                 .backgroundColor(ZHColor.BRAND)
                 .fontColor(ZHColor.TEXT_INVERSE)
                 .onClick(() => { this._submitCollectionDialog(); })
@@ -537,6 +563,80 @@ struct MainPage {
         }
         .width('100%').height('100%')
         .backgroundColor('#80000000')
+      }
+
+      // ---- New Item dialog ----
+      if (this.newItemDialogVisible) {
+        Column() {
+          Blank().layoutWeight(1)
+          Column() {
+            Text('New Item').fontSize(15).fontWeight(FontWeight.Medium)
+              .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
+              .margin({ bottom: 10 })
+            // Type selector
+            Row() {
+              ForEach(ITEM_TYPE_OPTIONS, (opt: [string, string]) => {
+                Button(opt[0])
+                  .fontSize(12).height(30)
+                  .margin({ right: 4, bottom: 4 })
+                  .backgroundColor(this.newItemDialogType === opt[1] ? ZHColor.BRAND : ZHColor.SURFACE_ALT)
+                  .fontColor(this.newItemDialogType === opt[1] ? ZHColor.TEXT_INVERSE : ZHColor.TEXT)
+                  .onClick(() => { this.newItemDialogType = opt[1]; })
+              }, (opt: [string, string]): string => opt[1])
+            }
+            .width('100%').flexWrap(FlexWrap.Wrap).margin({ bottom: 10 })
+            TextInput({ placeholder: 'Title', text: this.newItemDialogTitle })
+              .fontSize(14).height(38).width('100%')
+              .onChange((value: string) => { this.newItemDialogTitle = value; })
+            Row() {
+              Button('Cancel').fontSize(12).height(32)
+                .onClick(() => { this.newItemDialogVisible = false; })
+              Blank()
+              Button('Create').fontSize(12).height(32)
+                .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+                .onClick(() => { this._createNewItem(); })
+            }
+            .width('100%').margin({ top: 12 })
+          }
+          .width('70%').padding(16)
+          .backgroundColor(this.themeMode === 'dark' ? '#1B2028' : ZHColor.SURFACE_RAISED)
+          .borderRadius(10)
+        }
+        .width('100%').height('100%').backgroundColor('#80000000')
+      }
+
+      // ---- Add by Identifier dialog ----
+      if (this.identifierDialogVisible) {
+        Column() {
+          Blank().layoutWeight(1)
+          Column() {
+            Text('Add Item by Identifier').fontSize(15).fontWeight(FontWeight.Medium)
+              .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
+              .margin({ bottom: 8 })
+            Text('Enter one identifier per line.')
+              .fontSize(12).fontColor(ZHColor.TEXT_MUTED).margin({ bottom: 10 })
+            TextArea({ placeholder: 'DOI, ISBN, PMID, or arXiv ID', text: this.identifierDialogText })
+              .fontSize(14).height(100).width('100%')
+              .onChange((value: string) => { this.identifierDialogText = value; })
+            if (this.identifierDialogError.length > 0) {
+              Text(this.identifierDialogError)
+                .fontSize(12).fontColor('#C62828').margin({ top: 6 })
+            }
+            Row() {
+              Button('Cancel').fontSize(12).height(32)
+                .onClick(() => { this.identifierDialogVisible = false; })
+              Blank()
+              Button('Add').fontSize(12).height(32)
+                .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+                .onClick(() => { this._addByIdentifier(); })
+            }
+            .width('100%').margin({ top: 12 })
+          }
+          .width('70%').padding(16)
+          .backgroundColor(this.themeMode === 'dark' ? '#1B2028' : ZHColor.SURFACE_RAISED)
+          .borderRadius(10)
+        }
+        .width('100%').height('100%').backgroundColor('#80000000')
       }
     }
     .width('100%').height('100%')
@@ -556,6 +656,99 @@ struct MainPage {
       }).catch((_err: Error) => { repo.close(); });
     }
     this._refreshPendingSyncState();
+  }
+
+  /** Select and display an item by key (details view, phone view). */
+  private async _selectItemByKey(itemKey: string): Promise<void> {
+    let repo = new LibraryRepository();
+    await repo.open(getContext(this).getApplicationContext());
+    let item = await repo.getItemByKey(itemKey);
+    await repo.close();
+    if (item) {
+      this.selectedItemKey = itemKey;
+      this.selectedItemKeys = [itemKey];
+      this.currentItem = item;
+      this.selectedView = 'details';
+      this.phoneView = PhoneView.DETAIL;
+    }
+  }
+
+  /** Create a new item from the New Item dialog. */
+  private _createNewItem(): void {
+    let title = this.newItemDialogTitle.trim();
+    if (title.length === 0) { title = '(untitled)'; }
+    let itemType = this.newItemDialogType;
+    // Determine collection key
+    let collectionKey: string | null = null;
+    if (this.selectedViewMode === 'collection' && this.selectedCollectionKey.length > 0) {
+      collectionKey = this.selectedCollectionKey;
+    }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.createItem(collectionKey, itemType, title);
+    }).then((newKey: string) => {
+      this.newItemDialogVisible = false;
+      this.newItemDialogTitle = '';
+      this.newItemDialogType = 'journalArticle';
+      this.revision++;
+      this._refreshPendingSyncState();
+      this._selectItemByKey(newKey);
+      repo.close();
+    }).catch((_err: Error) => { repo.close(); });
+  }
+
+  /** Parse identifier lines and create stub items. */
+  private _addByIdentifier(): void {
+    let lines = this.identifierDialogText.split('\n');
+    let entries: { idType: string; value: string; itemType: string; fieldName: string; title: string }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      if (line.length === 0) { continue; }
+      let idType = IdentifierLookup.classify(line);
+      if (idType === 'unknown') { continue; }
+      let entry = { idType: idType, value: line, itemType: 'journalArticle', fieldName: '', title: '' };
+      if (idType === 'doi') { entry.itemType = 'journalArticle'; entry.fieldName = 'DOI'; entry.title = 'DOI ' + line; }
+      else if (idType === 'isbn') { entry.itemType = 'book'; entry.fieldName = 'ISBN'; entry.title = 'ISBN ' + line; }
+      else if (idType === 'pmid') { entry.itemType = 'journalArticle'; entry.fieldName = 'extra'; entry.title = 'PMID ' + line; }
+      else if (idType === 'arxiv') { entry.itemType = 'report'; entry.fieldName = 'extra'; entry.title = 'arXiv ' + line; }
+      entries.push(entry);
+    }
+    if (entries.length === 0) {
+      this.identifierDialogError = 'No valid identifiers found';
+      return;
+    }
+    let collectionKey: string | null = null;
+    if (this.selectedViewMode === 'collection' && this.selectedCollectionKey.length > 0) {
+      collectionKey = this.selectedCollectionKey;
+    }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      let createdKeys: string[] = [];
+      let next = Promise.resolve();
+      for (let i = 0; i < entries.length; i++) {
+        let e = entries[i];
+        next = next.then(() => {
+          return repo.createItem(collectionKey, e.itemType, e.title);
+        }).then((newKey: string) => {
+          createdKeys.push(newKey);
+          if (e.fieldName === 'extra') {
+            return repo.updateItemField(newKey, e.fieldName, `${e.idType.toUpperCase()}: ${e.value}`);
+          }
+          return repo.updateItemField(newKey, e.fieldName, e.value);
+        });
+      }
+      return next.then(() => {
+        this.identifierDialogVisible = false;
+        this.identifierDialogText = '';
+        this.identifierDialogError = '';
+        this.revision++;
+        this._refreshPendingSyncState();
+        if (createdKeys.length > 0) {
+          this._selectItemByKey(createdKeys[0]);
+        }
+        repo.close();
+      });
+    }).catch((_err: Error) => { repo.close(); });
   }
 
   private _doSync(): void {
@@ -686,9 +879,10 @@ struct MainPage {
     let repo = new LibraryRepository();
     let title = this.collectionDialogValue.trim();
     if (title.length === 0) {
-      this.collectionDialogVisible = false;
+      this.collectionDialogError = 'Collection name is required';
       return;
     }
+    this.collectionDialogError = '';
     repo.open(getContext(this).getApplicationContext()).then(() => {
       if (this.collectionDialogMode === 'rename' && this.collectionDialogTargetKey.length > 0) {
         if (this.collectionDialogTargetType === 'search') {
