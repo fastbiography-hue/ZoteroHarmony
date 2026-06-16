@@ -14,7 +14,7 @@ import { ZoteroAPIUpload } from '../api/ZoteroAPIUpload.ets';
 import { LibraryType, ObjectType } from '../api/ZoteroAPITypes.ets';
 import { SyncLocalState } from './SyncLocalState.ets';
 import { DownloadResult, UploadResult } from './SyncExceptions.ets';
-import { LibraryRepository, RemoteObjectType } from '../database/LibraryRepository.ets';
+import { LibraryRepository, RemoteObjectType, UploadObjectBase } from '../database/LibraryRepository.ets';
 
 const CONFLICT_DELAYS_MS = [10000, 20000, 40000, 60000, 120000, 240000, 300000];
 
@@ -206,23 +206,29 @@ export class SyncEngine {
     return hasWork ? UploadResult.SUCCESS : UploadResult.NOTHING_TO_UPLOAD;
   }
 
-  /** Extract key from a single API object. */
+  /** Extract key from a single API response object (results.successful). */
   private extractKey(obj: Record<string, Object>): string {
-    let data = obj['data'] as Record<string, Object> | undefined;
     let k: string = '';
-    if (typeof data?.['key'] === 'string') { k = data!['key'] as string; }
-    else if (typeof obj['key'] === 'string') { k = obj['key'] as string; }
+    let rawData = obj['data'];
+    if (typeof rawData === 'object' && rawData !== null) {
+      let dataObj = rawData as Record<string, Object>;
+      let dataKey = dataObj['key'];
+      if (typeof dataKey === 'string') { k = dataKey; }
+    }
+    if (k.length === 0) {
+      let rawKey = obj['key'];
+      if (typeof rawKey === 'string') { k = rawKey; }
+    }
     return k;
   }
 
-  /** Extract keys from an array of API objects (supports wrapped and unwrapped). */
-  private extractObjectKeys(objects: Record<string, Object>[]): string[] {
+  /** Extract keys from an array of upload objects. */
+  private extractObjectKeys(objects: UploadObjectBase[]): string[] {
     let keys: string[] = [];
     for (let i = 0; i < objects.length; i++) {
-      let obj = objects[i];
-      let data = obj['data'] as Record<string, Object> | undefined;
-      let k = (data?.['key'] ?? obj['key'] ?? '') as string;
-      if (k.length > 0) { keys.push(k); }
+      if (objects[i].key.length > 0) {
+        keys.push(objects[i].key);
+      }
     }
     return keys;
   }
