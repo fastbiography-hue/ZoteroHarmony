@@ -245,6 +245,39 @@ struct MainPage {
                 this._executeCommand(ZoteroCommands.DELETE);
                 return;
               }
+              // Child-row actions from ItemTree hierarchy
+              if (action === 'openAttachment') {
+                this.selectedItemKey = item.key ?? '';
+                this.selectedItemKeys = [this.selectedItemKey];
+                this.currentItem = item;
+                if (item.isAttachment()) {
+                  this._executeCommand(ZoteroCommands.OPEN_READER);
+                }
+                return;
+              }
+              if (action === 'editNote') {
+                this.selectedItemKey = item.key ?? '';
+                this.selectedItemKeys = [this.selectedItemKey];
+                this.currentItem = item;
+                this.selectedView = 'notes';
+                // TODO: open note editor when full note editing is implemented
+                return;
+              }
+              if (action === 'deleteChild') {
+                this.selectedItemKey = item.key ?? '';
+                this.selectedItemKeys = [this.selectedItemKey];
+                this.currentItem = item;
+                this._executeCommand(ZoteroCommands.DELETE);
+                return;
+              }
+              if (action === 'openAnnotation') {
+                this.selectedItemKey = item.key ?? '';
+                this.selectedItemKeys = [this.selectedItemKey];
+                this.currentItem = item;
+                // TODO: navigate to Reader annotation position
+                this._executeCommand(ZoteroCommands.OPEN_READER);
+                return;
+              }
             },
           })
           .layoutWeight(1)

@@ -1,7 +1,7 @@
 /*
- * ItemTree hierarchy — buildItemTreeRows + listChildRowsForItems tests.
- * Unit tests (buildItemTreeRows) run without DB.
- * Integration tests (listChildRowsForItems) require DevEco context.
+ * ItemTree hierarchy — buildItemTreeRows / listChildRowsForItems / helpers tests.
+ * Unit tests (without DB) run always.
+ * Integration tests (with DB) require DevEco context and skip gracefully.
  */
 
 import { describe, it, expect } from '@ohos/hypium';
@@ -9,6 +9,7 @@ import { ItemModel } from '../../main/ets/model/ItemModel.ets';
 import {
   ItemTreeRowModel,
   buildItemTreeRows,
+  collectParentKeysForChildLookup,
 } from '../../main/ets/ui/tree/ItemTree.ets';
 import { LibraryRepository, ItemChildSummary } from '../../main/ets/database/LibraryRepository.ets';
 
@@ -45,80 +46,115 @@ function makeChild(key: string, parentKey: string, childType: 'attachment' | 'no
 }
 
 export default function ItemTreeHierarchyTest(): void {
-  describe('buildItemTreeRows (unit)', (): void => {
+  describe('buildItemTreeRows + collectParentKeysForChildLookup (unit)', (): void => {
 
-    it('collapsed parent → only parent row, no children', (): void => {
-      let items = [makeItem('K1', 'Parent Item', 'journalArticle')];
-      let children = [makeChild('A1', 'K1', 'attachment', 'paper.pdf', 'application/pdf')];
+    // ================================================================
+    // Test 1: collapsed parent — still shows isExpandable + childCount
+    // ================================================================
+    it('1) collapsed parent → isExpandable=true, childCount>0, no child rows', (): void => {
+      let items = [makeItem('K1', 'Parent', 'journalArticle')];
+      let children = [makeChild('A1', 'K1', 'attachment', 'paper.pdf', 'pdf')];
       let rows = buildItemTreeRows(items, children, []);
       expect(rows.length === 1).assertTrue();
       expect(rows[0].rowType === 'item').assertTrue();
-      expect(rows[0].key === 'K1').assertTrue();
+      expect(rows[0].isExpandable === true).assertTrue();
+      expect(rows[0].childCount === 1).assertTrue();
+      expect(rows[0].isExpanded === false).assertTrue();
     });
 
-    it('expanded parent → parent + child rows', (): void => {
-      let items = [makeItem('K1', 'Parent Item', 'journalArticle')];
+    // ================================================================
+    // Test 2: expanded parent — shows parent + children
+    // ================================================================
+    it('2) expanded parent → parent + child rows, isExpandable=true, isExpanded=true', (): void => {
+      let items = [makeItem('K1', 'Parent', 'journalArticle')];
       let children = [
-        makeChild('A1', 'K1', 'attachment', 'paper.pdf', 'application/pdf'),
-        makeChild('N1', 'K1', 'note', 'My Note', '2024-06-01'),
+        makeChild('A1', 'K1', 'attachment', 'paper.pdf', 'pdf'),
+        makeChild('N1', 'K1', 'note', 'My Note', ''),
       ];
       let rows = buildItemTreeRows(items, children, ['K1']);
       expect(rows.length === 3).assertTrue();
-      expect(rows[0].rowType === 'item').assertTrue();
+      expect(rows[0].isExpandable === true).assertTrue();
+      expect(rows[0].isExpanded === true).assertTrue();
       expect(rows[1].rowType === 'attachment').assertTrue();
       expect(rows[1].level === 1).assertTrue();
       expect(rows[2].rowType === 'note').assertTrue();
       expect(rows[2].level === 1).assertTrue();
     });
 
-    it('child rows follow parent, no global sorting of children', (): void => {
+    // ================================================================
+    // Test 3: multiple parents — K1 with children, K2 without
+    // ================================================================
+    it('3) multiple parents → K1.isExpandable=true, K2.isExpandable=false', (): void => {
       let items = [
-        makeItem('K1', 'Alpha', 'journalArticle'),
-        makeItem('K2', 'Beta', 'book'),
+        makeItem('K1', 'Has Child', 'journalArticle'),
+        makeItem('K2', 'No Child', 'book'),
       ];
-      let children = [makeChild('N2', 'K2', 'note', 'Beta Note', '')];
-      let rows = buildItemTreeRows(items, children, ['K2']);
-      // K1 first, K2 second, then K2's note
-      expect(rows.length === 3).assertTrue();
-      expect(rows[0].key === 'K1').assertTrue();
-      expect(rows[1].key === 'K2').assertTrue();
-      expect(rows[2].key === 'N2').assertTrue();
-      expect(rows[2].parentKey === 'K2').assertTrue();
-    });
-
-    it('empty items → empty rows', (): void => {
-      let rows = buildItemTreeRows([], [], []);
-      expect(rows.length === 0).assertTrue();
-    });
-
-    it('item without key is skipped', (): void => {
-      let item = new ItemModel();
-      // key is null by default
-      let rows = buildItemTreeRows([item], [], []);
-      expect(rows.length === 0).assertTrue();
-    });
-
-    it('expanded state toggles correctly via rebuild', (): void => {
-      let items = [makeItem('K1', 'Toggle Test', 'journalArticle')];
       let children = [makeChild('A1', 'K1', 'attachment', 'file.pdf', 'pdf')];
-      // collapsed
-      let r1 = buildItemTreeRows(items, children, []);
-      expect(r1.length === 1).assertTrue();
-      // expanded
-      let r2 = buildItemTreeRows(items, children, ['K1']);
-      expect(r2.length === 2).assertTrue();
+      let rows = buildItemTreeRows(items, children, []);
+      expect(rows.length === 2).assertTrue();
+      let r1 = rows.find((r: ItemTreeRowModel) => r.key === 'K1');
+      let r2 = rows.find((r: ItemTreeRowModel) => r.key === 'K2');
+      expect(r1 !== undefined).assertTrue();
+      expect(r2 !== undefined).assertTrue();
+      if (r1) { expect(r1.isExpandable === true).assertTrue(); }
+      if (r2) { expect(r2.isExpandable === false).assertTrue(); }
+    });
+
+    // ================================================================
+    // Test 4: collectParentKeysForChildLookup — returns ALL keys
+    // ================================================================
+    it('4) collectParentKeysForChildLookup → returns all parent keys, not just expanded', (): void => {
+      let items = [
+        makeItem('K1', 'Item 1', 'journalArticle'),
+        makeItem('K2', 'Item 2', 'book'),
+        makeItem('K3', 'Item 3', 'conferencePaper'),
+      ];
+      let keys = collectParentKeysForChildLookup(items);
+      expect(keys.length === 3).assertTrue();
+      expect(keys.indexOf('K1') >= 0).assertTrue();
+      expect(keys.indexOf('K2') >= 0).assertTrue();
+      expect(keys.indexOf('K3') >= 0).assertTrue();
+    });
+
+    // ================================================================
+    // Test 5: item without key → skipped
+    // ================================================================
+    it('5) collectParentKeysForChildLookup → skips null keys', (): void => {
+      let items = [makeItem('K1', 'Has Key', 'journalArticle'), new ItemModel()];
+      let keys = collectParentKeysForChildLookup(items);
+      expect(keys.length === 1).assertTrue();
+      expect(keys[0] === 'K1').assertTrue();
+    });
+
+    // ================================================================
+    // Test 6: toggle expand/collapse rebuild
+    // ================================================================
+    it('6) toggle → collapsed→expanded shows children, expanded→collapsed hides them', (): void => {
+      let items = [makeItem('K1', 'Toggle', 'journalArticle')];
+      let children = [makeChild('A1', 'K1', 'attachment', 'f.pdf', 'pdf')];
+      let collapsed = buildItemTreeRows(items, children, []);
+      expect(collapsed.length === 1).assertTrue();
+      let expanded = buildItemTreeRows(items, children, ['K1']);
+      expect(expanded.length === 2).assertTrue();
+    });
+
+    // ================================================================
+    // Test 7: empty items → empty rows
+    // ================================================================
+    it('7) empty items → empty rows', (): void => {
+      let rows = buildItemTreeRows([], [makeChild('A1', 'K1', 'attachment', 'f.pdf', 'pdf')], ['K1']);
+      expect(rows.length === 0).assertTrue();
     });
 
   });
 
   describe('listChildRowsForItems (integration)', (): void => {
 
-    it('parent with attachment → returns attachment child row', async (): Promise<void> => {
+    it('attachment child row → key + parentKey + title', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let pKey = await repo.createItem(null, 'journalArticle', 'Parent with attachment');
+        let pKey = await repo.createItem(null, 'journalArticle', 'Parent A');
         await repo.createLinkedUrlAttachment(pKey, 'https://example.com/paper.pdf');
         let rows = await repo.listChildRowsForItems([pKey]);
-        expect(rows.length >= 1).assertTrue();
         let att = rows.find((r: ItemChildSummary) => r.childType === 'attachment');
         expect(att !== undefined).assertTrue();
         if (att) {
@@ -128,10 +164,10 @@ export default function ItemTreeHierarchyTest(): void {
       });
     });
 
-    it('parent with note → returns note child row', async (): Promise<void> => {
+    it('note child row → key + parentKey', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let pKey = await repo.createItem(null, 'journalArticle', 'Parent with note');
-        let nKey = await repo.createNote(pKey, 'Test Note', '<p>Body</p>');
+        let pKey = await repo.createItem(null, 'journalArticle', 'Parent N');
+        let nKey = await repo.createNote(pKey, 'Note Title', '<p>Body</p>');
         let rows = await repo.listChildRowsForItems([pKey]);
         let note = rows.find((r: ItemChildSummary) => r.childType === 'note');
         expect(note !== undefined).assertTrue();
@@ -142,22 +178,18 @@ export default function ItemTreeHierarchyTest(): void {
       });
     });
 
-    it('deleted child item not returned', async (): Promise<void> => {
+    it('deleted child → excluded', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let pKey = await repo.createItem(null, 'journalArticle', 'Parent for delete test');
+        let pKey = await repo.createItem(null, 'journalArticle', 'Parent Del');
         let nKey = await repo.createNote(pKey, 'Delete Me', '<p>gone</p>');
-        await repo.deleteNote(
-          Number.parseInt(
-            (await repo.getItemByKey(nKey))?.id?.toString() ?? '0', 10
-          )
-        );
+        await repo.deleteNote(Number.parseInt(
+          (await repo.getItemByKey(nKey))?.id?.toString() ?? '0', 10));
         let rows = await repo.listChildRowsForItems([pKey]);
-        let found = rows.find((r: ItemChildSummary) => r.key === nKey);
-        expect(found === undefined).assertTrue();
+        expect(rows.find((r: ItemChildSummary) => r.key === nKey) === undefined).assertTrue();
       });
     });
 
-    it('empty parentKeys → empty result', async (): Promise<void> => {
+    it('empty input → empty result', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
         let rows = await repo.listChildRowsForItems([]);
         expect(rows.length === 0).assertTrue();

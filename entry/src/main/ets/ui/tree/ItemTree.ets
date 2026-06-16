@@ -100,6 +100,16 @@ export function buildItemTreeRows(
   return rows;
 }
 
+/** Extract all non-empty parent keys from items for child lookups. */
+export function collectParentKeysForChildLookup(items: ItemModel[]): string[] {
+  let keys: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    let k = items[i].key ?? '';
+    if (k.length > 0) { keys.push(k); }
+  }
+  return keys;
+}
+
 function _iconForItemType(itemType: string): string {
   let lower = itemType.toLowerCase();
   if (lower === 'book') { return 'B'; }
@@ -493,6 +503,12 @@ export struct ItemTree {
                 AppStore.selectedItemKey = r.key;
                 if (r.item && this.onItemSelected) {
                   this.onItemSelected(r.item);
+                } else if (this.onItemSelected) {
+                  this._loadItemForRow(r).then((loadedItem: ItemModel | null) => {
+                    if (loadedItem && this.onItemSelected) {
+                      this.onItemSelected(loadedItem);
+                    }
+                  }).catch((_err: Error) => {});
                 }
               },
               onCheck: (r: ItemTreeRowModel, checked: boolean) => {
@@ -517,12 +533,15 @@ export struct ItemTree {
                 this.selectedItemKey = r.key;
                 this.selectedItemKeys = [r.key];
                 AppStore.selectedItemKey = r.key;
-                if (this.onItemAction && r.item) {
-                  // Map child actions to parent-compatible dispatch
+                if (r.item && this.onItemAction) {
                   this.onItemAction(action, r.item);
-                } else if (this.onItemAction && !r.item) {
-                  // Child row without ItemModel — forward action string
-                  this.onItemAction(action, new ItemModel());
+                } else if (this.onItemAction) {
+                  // Lazy-load the real ItemModel for child rows
+                  this._loadItemForRow(r).then((loadedItem: ItemModel | null) => {
+                    if (loadedItem && this.onItemAction) {
+                      this.onItemAction(action, loadedItem);
+                    }
+                  }).catch((_err: Error) => {});
                 }
               },
             })
@@ -536,6 +555,23 @@ export struct ItemTree {
     .width('100%').height('100%')
   }
 
+  /** Lazily load the ItemModel for a child row from the database. */
+  private _loadItemForRow(row: ItemTreeRowModel): Promise<ItemModel | null> {
+    if (row.item) { return Promise.resolve(row.item); }
+    if (row.key.length === 0) { return Promise.resolve(null); }
+    let repo = new LibraryRepository();
+    let context = getContext(this).getApplicationContext();
+    return repo.open(context).then(() => {
+      return repo.getItemByKey(row.key);
+    }).then((item: ItemModel | null) => {
+      repo.close();
+      return item;
+    }).catch((_err: Error) => {
+      repo.close();
+      return null;
+    });
+  }
+
   private _toggleExpand(key: string): void {
     let idx = this.expandedKeys.indexOf(key);
     if (idx >= 0) {
@@ -546,14 +582,12 @@ export struct ItemTree {
     this._rebuildRows();
   }
 
+  /**
+   * Rebuild flattened tree rows.  Queries child rows for ALL parent items
+   * so that collapsed parents still know their childCount and show ▶.
+   */
   private _rebuildRows(): void {
-    let parentKeys: string[] = [];
-    for (let i = 0; i < this.items.length; i++) {
-      let k = this.items[i].key ?? '';
-      if (k.length > 0 && this.expandedKeys.indexOf(k) >= 0) {
-        parentKeys.push(k);
-      }
-    }
+    let parentKeys = collectParentKeysForChildLookup(this.items);
     if (parentKeys.length === 0) {
       this.rows = buildItemTreeRows(this.items, [], this.expandedKeys);
       return;
@@ -671,6 +705,7 @@ export struct ItemTree {
     this._persistColumns();
     this._persistSort();
     this._sortItems();
+    this._rebuildRows();
   }
 
   private _setSort(key: string, asc: boolean): void {
@@ -678,6 +713,7 @@ export struct ItemTree {
     this.sortAsc = asc;
     this._persistSort();
     this._sortItems();
+    this._rebuildRows();
   }
 
   private async _loadDisplayPreferences(): Promise<void> {
