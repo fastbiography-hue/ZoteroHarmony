@@ -667,6 +667,15 @@ struct MainPage {
     .backgroundColor(this.themeMode === 'dark' ? '#11151B' : ZHColor.SURFACE)
   }
 
+  private _setWorkflowMessage(message: string): void {
+    this.workflowMessage = message;
+    setTimeout(() => {
+      if (this.workflowMessage === message) {
+        this.workflowMessage = '';
+      }
+    }, 3000);
+  }
+
   // ---- Dialog open/close helpers ----
 
   private _openNewCollectionDialog(): void {
@@ -1066,6 +1075,19 @@ struct MainPage {
       hasSelection: this.selectedItemKeys.length > 0,
       onLibraryChanged: (): void => {
         this.revision++;
+      },
+      onItemCreated: (itemKey: string, viewHint: string, message: string): void => {
+        this.revision++;
+        this._setWorkflowMessage(message);
+        this._refreshPendingSyncState();
+        this._selectItemByKey(itemKey).then(() => {
+          if (viewHint === 'note') { this.selectedView = 'note'; }
+          else { this.selectedView = 'details'; }
+          this.phoneView = PhoneView.DETAIL;
+        }).catch((_err: Error) => {});
+      },
+      onWorkflowMessage: (message: string): void => {
+        this._setWorkflowMessage(message);
       },
     };
   }

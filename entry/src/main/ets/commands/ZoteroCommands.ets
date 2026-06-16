@@ -30,6 +30,10 @@ export interface ZoteroCommandContext {
   viewMode: string;
   hasSelection: boolean;
   onLibraryChanged?: () => void;
+  /** Notify that a child item (note/attachment) was created. */
+  onItemCreated?: (itemKey: string, viewHint: string, message: string) => void;
+  /** Display a transient message in the footer. */
+  onWorkflowMessage?: (message: string) => void;
 }
 
 export type ZoteroCommandHandler = (context: ZoteroCommandContext) => Promise<void>;

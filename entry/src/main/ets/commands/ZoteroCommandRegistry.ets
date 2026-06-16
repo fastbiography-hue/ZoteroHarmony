@@ -92,9 +92,14 @@ export class ZoteroCommandRegistry {
         await repo.open(context.appContext);
         let parentKey = context.itemKeys.length > 0 ? context.itemKeys[0] : context.itemKey;
         let title = (await repo.getItemByKey(parentKey))?.itemData.get('title') ?? 'New Note';
-        await repo.createNote(parentKey, `${title} Note`, '');
+        let noteKey = await repo.createNote(parentKey, `${title} Note`, '');
         await repo.close();
         if (context.onLibraryChanged) { context.onLibraryChanged(); }
+        if (noteKey.length > 0 && context.onItemCreated) {
+          context.onItemCreated(noteKey, 'note', 'Note added');
+        } else if (context.onWorkflowMessage) {
+          context.onWorkflowMessage('Failed to add note');
+        }
       },
     });
     this.register({
@@ -104,26 +109,32 @@ export class ZoteroCommandRegistry {
       enabled: (context: ZoteroCommandContext): boolean => context.hasSelection,
       execute: async (context: ZoteroCommandContext): Promise<void> => {
         let url = (await QuickCopy.readText()).trim();
+        let attachmentKey = '';
         let repo = new LibraryRepository();
         await repo.open(context.appContext);
         try {
           if (url.length > 0 && (url.startsWith('http://') || url.startsWith('https://'))) {
-            await repo.createLinkedUrlAttachment(context.itemKey, url);
+            attachmentKey = await repo.createLinkedUrlAttachment(context.itemKey, url);
           } else if (url.length > 0 && fileIo.accessSync(url)) {
-            await repo.createImportedFileAttachment(context.itemKey, url, context.appContext);
+            attachmentKey = await repo.createImportedFileAttachment(context.itemKey, url, context.appContext);
           } else {
             let documentSelectOptions = new picker.DocumentSelectOptions();
             documentSelectOptions.maxSelectNumber = 1;
             let documentViewPicker = new picker.DocumentViewPicker(context.appContext);
             let uris = await documentViewPicker.select(documentSelectOptions);
             if (uris.length > 0) {
-              await repo.createImportedFileAttachment(context.itemKey, uris[0], context.appContext);
+              attachmentKey = await repo.createImportedFileAttachment(context.itemKey, uris[0], context.appContext);
             }
           }
         } finally {
           await repo.close();
         }
         if (context.onLibraryChanged) { context.onLibraryChanged(); }
+        if (attachmentKey.length > 0 && context.onItemCreated) {
+          context.onItemCreated(attachmentKey, 'details', 'Attachment added');
+        } else if (context.onWorkflowMessage) {
+          context.onWorkflowMessage('No attachment added');
+        }
       },
     });
     this.register({

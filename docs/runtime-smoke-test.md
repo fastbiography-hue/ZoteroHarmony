@@ -64,15 +64,22 @@
 
 - [ ] Select a regular item
 - [ ] Tap toolbar **Note** or row menu **Add note**
-- [ ] Child note row appears under item (expand ▶ to see if collapsed)
-- [ ] Tap note child → note editor opens (title + body)
+- [ ] Footer shows "Note added" (green, auto-clears after 3s)
+- [ ] New note child is **automatically selected**
+- [ ] Right pane enters **note editor** (title + body)
+- [ ] Child note row appears under parent item (expand ▶ if collapsed)
+- [ ] Edit title/body → Save → pending dot appears
 
 ## H. Add Attachment
 
 - [ ] Select a regular item
-- [ ] Tap row menu **Add attachment**
-- [ ] Child attachment row appears under item
-- [ ] Tap attachment child → attachment detail or reader opens
+- [ ] Tap row menu **Add attachment** (pastes URL from clipboard)
+- [ ] Footer shows "Attachment added" (green, auto-clears after 3s)
+- [ ] New attachment child is **automatically selected**
+- [ ] Right pane enters **attachment details** view
+- [ ] Child attachment row appears under parent item
+- [ ] If no URL in clipboard: file picker opens
+- [ ] Cancel picker → "No attachment added" (no crash)
 
 ## I. Delete Item
 
