@@ -1,26 +1,22 @@
 /*
- * Pure helpers for ItemDetailsForm — creator/tag dirty detection.
- * Extracted from ItemDetailsForm.ets so tests can import without
- * pulling in the @Component struct.
+ * Pure helpers for creator/tag dirty detection.
+ * Uses string serialisation to avoid ArkTS object-literal restrictions.
  */
 
 import { ZoteroCreator, ZoteroTag } from '../../model/ItemTypes.ets';
 
+const SEP = '';
+
 export function creatorsToJson(creators: ZoteroCreator[]): string {
-  let arr: Record<string, string>[] = [];
+  let parts: string[] = [];
   for (let i = 0; i < creators.length; i++) {
-    let entry: Record<string, string> = {
-      ct: creators[i].creatorType,
-      fn: creators[i].firstName,
-      ln: creators[i].lastName,
-      fm: `${creators[i].fieldMode}`,
-    };
-    if ((creators[i].name ?? '').length > 0) {
-      entry['nm'] = creators[i].name!;
-    }
-    arr.push(entry);
+    let c = creators[i];
+    parts.push([
+      c.creatorType, c.firstName, c.lastName,
+      `${c.fieldMode}`, c.name ?? ''
+    ].join(SEP));
   }
-  return JSON.stringify(arr);
+  return parts.join('');
 }
 
 export function creatorsJsonEqual(jsonA: string, creatorsB: ZoteroCreator[]): boolean {
@@ -28,11 +24,11 @@ export function creatorsJsonEqual(jsonA: string, creatorsB: ZoteroCreator[]): bo
 }
 
 export function tagsToJson(tags: ZoteroTag[]): string {
-  let arr: Record<string, string>[] = [];
+  let parts: string[] = [];
   for (let i = 0; i < tags.length; i++) {
-    arr.push({ tg: tags[i].tag, tp: `${tags[i].type}` });
+    parts.push(`${tags[i].tag}${SEP}${tags[i].type}`);
   }
-  return JSON.stringify(arr);
+  return parts.join('');
 }
 
 export function tagsJsonEqual(jsonA: string, tagsB: ZoteroTag[]): boolean {

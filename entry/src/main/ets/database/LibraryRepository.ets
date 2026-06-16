@@ -7,7 +7,7 @@
 import { ZoteroDb, Row } from './ZoteroDb.ets';
 import { migrate } from './SchemaMigration.ets';
 import { ItemModel } from '../model/ItemModel.ets';
-import { AttachmentLinkMode, ZoteroTag } from '../model/ItemTypes.ets';
+import { AttachmentLinkMode, ZoteroTag, ZoteroCreator } from '../model/ItemTypes.ets';
 import { CollectionTreeRow } from '../ui/tree/CollectionTreeRow.ets';
 import { AttachmentEntry } from '../ui/AttachmentsList.ets';
 import { StorageRequest } from '../sync/StorageRequest.ets';
@@ -32,6 +32,13 @@ export interface SavedSearchQueryData {
 }
 
 export type RemoteObjectType = 'collection' | 'item' | 'search';
+
+export class NoteByKeyResult {
+  id: number = 0;
+  key: string = '';
+  title: string = '';
+  noteText: string = '';
+}
 
 export interface PendingSyncSummary {
   queueCount: number;
@@ -681,8 +688,8 @@ export class LibraryRepository {
     await this.updateNote(noteID, title, noteText);
   }
 
-  /** Read note body by item key.  Returns id/key/title/noteText or null. */
-  async getNoteByKey(noteKey: string): Promise<{ id: number; key: string; title: string; noteText: string } | null> {
+  /** Read note body by item key.  Returns NoteByKeyResult or null. */
+  async getNoteByKey(noteKey: string): Promise<NoteByKeyResult | null> {
     let rows = await this.db.queryAsync(
       `SELECT i.itemID, i.key, n.title, n.note
        FROM itemNotes n JOIN items i ON i.itemID = n.itemID
@@ -690,12 +697,12 @@ export class LibraryRepository {
       [noteKey]
     );
     if (rows.length === 0) { return null; }
-    return {
-      id: this.toNumber(rows[0]['itemID']),
-      key: this.toString(rows[0]['key'], noteKey),
-      title: this.toString(rows[0]['title'], ''),
-      noteText: this.toString(rows[0]['note'], ''),
-    };
+    let result = new NoteByKeyResult();
+    result.id = this.toNumber(rows[0]['itemID']);
+    result.key = this.toString(rows[0]['key'], noteKey);
+    result.title = this.toString(rows[0]['title'], '');
+    result.noteText = this.toString(rows[0]['note'], '');
+    return result;
   }
 
   /** Update attachment metadata by key.  Writes itemAttachments + itemData + syncQueue. */
@@ -998,11 +1005,12 @@ export class LibraryRepository {
         let firstName = c.firstName;
         let fieldMode = c.fieldMode;
         // Single-field creator: store name in lastName
-        if (fieldMode === 1 && (c.name ?? '').length > 0 && lastName.length === 0) {
-          lastName = c.name!;
+        let creatorName: string = typeof c.name === 'string' ? c.name as string : '';
+        if (fieldMode === 1 && creatorName.length > 0 && lastName.length === 0) {
+          lastName = creatorName;
         }
         // Skip empty creators
-        if (lastName.length === 0 && firstName.length === 0 && ((c.name ?? '').length === 0)) {
+        if (lastName.length === 0 && firstName.length === 0 && creatorName.length === 0) {
           continue;
         }
         await this.db.executeSql(

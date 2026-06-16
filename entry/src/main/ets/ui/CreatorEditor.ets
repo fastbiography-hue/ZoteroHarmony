@@ -78,9 +78,10 @@ export struct CreatorEditor {
           .fontWeight(FontWeight.Medium).layoutWeight(1)
         if (!this.readOnly) {
           Button('+ Add').fontSize(12).height(28).onClick(() => {
-            let next = [...this.creators, {
+            let newCreator: ZoteroCreator = {
               creatorType: 'author', firstName: '', lastName: '', fieldMode: 0
-            }];
+            };
+            let next: ZoteroCreator[] = [...this.creators, newCreator];
             this.creators = next;
             if (this.onCreatorsChange) { this.onCreatorsChange(next); }
           })

@@ -33,10 +33,10 @@ export class CitationFormatter {
   }
 
   static formatCitation(item: ItemModel, styleName: string, index: number): string {
-    let kind = this.styleKind(styleName);
-    let contributors = this.formatContributorList(item);
-    let year = this.extractYear(item);
-    let title = this.cleanText(item.itemData.get('title') ?? item.displayTitle ?? '(untitled)');
+    let kind = CitationFormatter.styleKind(styleName);
+    let contributors = CitationFormatter.formatContributorList(item);
+    let year = CitationFormatter.extractYear(item);
+    let title = CitationFormatter.cleanText(item.itemData.get('title') ?? item.displayTitle ?? '(untitled)');
     if (kind === 'numeric') {
       return `[${index}]`;
     }
@@ -49,20 +49,20 @@ export class CitationFormatter {
   }
 
   static formatBibliographyParts(item: ItemModel): BibliographyParts {
-    let title = this.cleanText(item.itemData.get('title') ?? item.displayTitle ?? '(untitled)');
-    let year = this.extractYear(item);
+    let title = CitationFormatter.cleanText(item.itemData.get('title') ?? item.displayTitle ?? '(untitled)');
+    let year = CitationFormatter.extractYear(item);
     return {
-      contributors: this.formatContributorList(item),
+      contributors: CitationFormatter.formatContributorList(item),
       year: year,
       title: title,
-      container: this.formatContainer(item),
-      publisher: this.formatPublisherLine(item),
-      identifiers: this.formatIdentifiers(item),
+      container: CitationFormatter.formatContainer(item),
+      publisher: CitationFormatter.formatPublisherLine(item),
+      identifiers: CitationFormatter.formatIdentifiers(item),
     };
   }
 
   static formatAuthorYearLine(item: ItemModel): string {
-    let parts = this.formatBibliographyParts(item);
+    let parts = CitationFormatter.formatBibliographyParts(item);
     let year = parts.year.length > 0 ? ` (${parts.year})` : ' (n.d.)';
     let lead = parts.contributors.length > 0 ? parts.contributors : '';
     let head = lead.length > 0 ? `${lead}${year}` : `${parts.title}${year}`;
@@ -84,7 +84,7 @@ export class CitationFormatter {
   }
 
   static formatNumericLine(item: ItemModel, index: number): string {
-    let parts = this.formatBibliographyParts(item);
+    let parts = CitationFormatter.formatBibliographyParts(item);
     let year = parts.year.length > 0 ? parts.year : 'n.d.';
     let lead = parts.contributors.length > 0 ? parts.contributors : parts.title;
     let line = `${index}. ${lead} (${year}).`;
@@ -106,9 +106,9 @@ export class CitationFormatter {
   static formatContributorList(item: ItemModel): string {
     let creators = item.creators;
     if (creators.length > 0) {
-      return this.formatCreators(creators);
+      return CitationFormatter.formatCreators(creators);
     }
-    return this.cleanText(item.itemData.get('creator') ?? '');
+    return CitationFormatter.cleanText(item.itemData.get('creator') ?? '');
   }
 
   static extractYear(item: ItemModel): string {
@@ -117,11 +117,11 @@ export class CitationFormatter {
   }
 
   static formatContainer(item: ItemModel): string {
-    let publicationTitle = this.cleanText(item.itemData.get('publicationTitle') ?? '');
-    let journal = this.cleanText(item.itemData.get('journalAbbreviation') ?? '');
-    let volume = this.cleanText(item.itemData.get('volume') ?? '');
-    let issue = this.cleanText(item.itemData.get('issue') ?? '');
-    let pages = this.cleanText(item.itemData.get('pages') ?? '');
+    let publicationTitle = CitationFormatter.cleanText(item.itemData.get('publicationTitle') ?? '');
+    let journal = CitationFormatter.cleanText(item.itemData.get('journalAbbreviation') ?? '');
+    let volume = CitationFormatter.cleanText(item.itemData.get('volume') ?? '');
+    let issue = CitationFormatter.cleanText(item.itemData.get('issue') ?? '');
+    let pages = CitationFormatter.cleanText(item.itemData.get('pages') ?? '');
 
     let parts: string[] = [];
     if (publicationTitle.length > 0) {
@@ -141,9 +141,9 @@ export class CitationFormatter {
   }
 
   static formatPublisherLine(item: ItemModel): string {
-    let publisher = this.cleanText(item.itemData.get('publisher') ?? '');
-    let place = this.cleanText(item.itemData.get('place') ?? '');
-    let edition = this.cleanText(item.itemData.get('edition') ?? '');
+    let publisher = CitationFormatter.cleanText(item.itemData.get('publisher') ?? '');
+    let place = CitationFormatter.cleanText(item.itemData.get('place') ?? '');
+    let edition = CitationFormatter.cleanText(item.itemData.get('edition') ?? '');
     let parts: string[] = [];
     if (place.length > 0 && publisher.length > 0) {
       parts.push(`${place}: ${publisher}`);
@@ -157,8 +157,8 @@ export class CitationFormatter {
   }
 
   static formatIdentifiers(item: ItemModel): string {
-    let doi = this.cleanText(item.itemData.get('DOI') ?? '');
-    let url = this.cleanText(item.itemData.get('url') ?? '');
+    let doi = CitationFormatter.cleanText(item.itemData.get('DOI') ?? '');
+    let url = CitationFormatter.cleanText(item.itemData.get('url') ?? '');
     let parts: string[] = [];
     if (doi.length > 0) {
       parts.push(`https://doi.org/${doi}`);
@@ -173,11 +173,11 @@ export class CitationFormatter {
     let names: string[] = [];
     for (let i = 0; i < creators.length; i++) {
       let creator = creators[i];
-      let name = this.cleanText(creator.lastName);
+      let name = CitationFormatter.cleanText(creator.lastName);
       if (creator.fieldMode === 0 && creator.firstName.length > 0) {
-        name = `${name}, ${this.cleanText(creator.firstName)}`;
+        name = `${name}, ${CitationFormatter.cleanText(creator.firstName)}`;
       } else if (creator.fieldMode !== 0 && creator.firstName.length > 0) {
-        name = this.cleanText(creator.firstName);
+        name = CitationFormatter.cleanText(creator.firstName);
       }
       if (name.length > 0) {
         names.push(name);

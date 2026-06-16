@@ -123,7 +123,6 @@ export struct CollectionTree {
           CollectionRowItem({
             row: row,
             selectedRowID: this.selectedRowID,
-            themeMode: this.themeMode,
             onSelect: (r: CollectionTreeRow) => {
               this.selectedRowID = r.id;
               if (r.libraryID) {

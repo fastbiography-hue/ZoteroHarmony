@@ -77,6 +77,7 @@ export class ItemModel extends DataObject {
   set itemTypeName(value: string | null) { this._itemTypeName = value; }
   get itemData(): Map<string, string> { return this._itemData; }
   get creators(): ZoteroCreator[] { return this._creators; }
+  set creators(value: ZoteroCreator[]) { this._creators = value; }
   get noteText(): string | null { return this._noteText; }
   set noteText(value: string | null) { this._noteText = value; }
   get displayTitle(): string | null { return this._displayTitle; }

@@ -32,7 +32,7 @@ export class ExportService {
     let lines: string[] = [];
     for (let i = 0; i < items.length; i++) {
       let item = items[i];
-      let citeKey = item.itemData.get('citationKey') ?? this._bibtexKey(item);
+      let citeKey = item.itemData.get('citationKey') ?? ExportService._bibtexKey(item);
       let type = item.itemTypeID === null ? 'misc' : 'article';
       lines.push(`@${type}{${citeKey},`);
       lines.push(`  title = {${item.itemData.get('title') ?? ''}},`);

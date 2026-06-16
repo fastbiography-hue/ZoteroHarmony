@@ -184,9 +184,8 @@ export class SyncEngine {
           let successfulKeys: string[] = [];
           for (let si = 0; si < results.successful.length; si++) {
             let succ = results.successful[si];
-            let data = succ['data'] ?? succ;
-            let sk = (data['key'] ?? succ['key'] ?? '') as string;
-            if (sk.length > 0) { successfulKeys.push(sk); }
+            let succKey = this.extractKey(succ);
+            if (succKey.length > 0) { successfulKeys.push(succKey); }
           }
           // unchanged keys are already on the server
           let allDone = successfulKeys.concat(results.unchanged);
@@ -205,6 +204,15 @@ export class SyncEngine {
     }
 
     return hasWork ? UploadResult.SUCCESS : UploadResult.NOTHING_TO_UPLOAD;
+  }
+
+  /** Extract key from a single API object. */
+  private extractKey(obj: Record<string, Object>): string {
+    let data = obj['data'] as Record<string, Object> | undefined;
+    let k: string = '';
+    if (typeof data?.['key'] === 'string') { k = data!['key'] as string; }
+    else if (typeof obj['key'] === 'string') { k = obj['key'] as string; }
+    return k;
   }
 
   /** Extract keys from an array of API objects (supports wrapped and unwrapped). */

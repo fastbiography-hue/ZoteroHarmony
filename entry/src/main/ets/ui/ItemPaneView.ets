@@ -16,7 +16,8 @@ import { ItemDetailsForm } from './ItemDetailsForm.ets';
 import { AbstractEditor } from './AbstractEditor.ets';
 import { AttachmentsList, AttachmentEntry } from './AttachmentsList.ets';
 import { NotesList, NoteEntry } from './NotesList.ets';
-import { RelatedItems, RelatedItemRef } from './RelatedItems.ets';
+import { RelatedItems } from './RelatedItems.ets';
+import { RelatedItemRef } from '../model/RelatedItemModel.ets';
 import { TagChipEditor } from './TagChipEditor.ets';
 import { ZoteroTag, AttachmentLinkMode } from '../model/ItemTypes.ets';
 import { attachmentDraftDirty, AttachmentDraftSnapshot } from './helpers/AttachmentDraftHelpers.ets';
@@ -164,88 +165,111 @@ export struct ItemPaneView {
   }
 
   build() {
-    // ---- Attachment child item detail form ----
-    if (this.item.isAttachment()) {
-      Column() {
-        this._itemHeader()
-        Scroll() {
-          Column() {
-            this._sectionHeader('ATTACHMENT METADATA')
-            this._readOnlyRow('Link Mode', this._linkModeLabel(this.item.attachmentLinkMode))
-            this._readOnlyRow('Parent Item', this.item.parentKey ?? '(none)')
-            this._editRow('Title', this.attachTitle, (v: string) => { this.attachTitle = v; this._updateAttachmentDirty(); })
-            this._editRow('Content Type', this.attachContentType, (v: string) => { this.attachContentType = v; this._updateAttachmentDirty(); })
-            this._editRow('Path', this.attachPath, (v: string) => { this.attachPath = v; this._updateAttachmentDirty(); })
-            this._editRow('URL', this.attachUrl, (v: string) => { this.attachUrl = v; this._updateAttachmentDirty(); })
-            Blank().height(20)
-            // Status bar
-            Row() {
-              if (this.attachSaveStatus === 'success') {
-                Text(this.attachSaveMessage).fontSize(11).fontColor('#2E7D32').layoutWeight(1)
-              } else if (this.attachSaveStatus === 'error') {
-                Text(this.attachSaveMessage).fontSize(11).fontColor('#C62828').layoutWeight(1)
-              } else if (this.attachIsDirty) {
-                Text('Unsaved changes').fontSize(11).fontColor(ZHColor.WARNING).layoutWeight(1)
-              } else { Blank().layoutWeight(1) }
-              Button('Reset').fontSize(11).height(28).margin({ right: 6 })
-                .enabled(this.attachIsDirty).onClick(() => { this._initAttachmentDraft(); })
-              Button('Open').fontSize(11).height(28).margin({ right: 6 })
-                .backgroundColor(ZHColor.SURFACE_ALT).fontColor(ZHColor.TEXT)
-                .onClick(() => {
-                  let filePath = this.attachPath.length > 0 ? this.attachPath :
-                    (this.attachUrl.length > 0 ? this.attachUrl : '');
-                  let title = this.attachTitle || this.item.itemData.get('title') || 'Attachment';
-                  readerManager.open(this.item.id ?? 0, this.item.key ?? '', title, filePath, 1);
-                  router.pushUrl({ url: 'reader/ReaderPage', params: { itemKey: this.item.key ?? '' } });
-                })
-              Button('Save').fontSize(11).height(28)
-                .enabled(this.attachIsDirty).backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
-                .onClick(() => { this._saveAttachment(); })
-              Button('Delete').fontSize(11).height(28).margin({ left: 6 })
-                .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
-                .onClick(() => { this._deleteCurrentAttachment(); })
-            }
-            .padding({ left: 14, right: 14, top: 8, bottom: 8 })
-          }
+    Column() {
+      if (this.item.isAttachment()) {
+        this._attachmentChildPane()
+      } else if (this.item.isNote()) {
+        if (this.noteLoaded) {
+          this._noteChildPane()
+        } else {
+          this._loadingNotePane()
         }
-        .layoutWeight(1).scrollBar(BarState.Auto)
+      } else {
+        this._regularItemPane()
       }
-      .width('100%').height('100%').backgroundColor(ZHColor.SURFACE)
-      return
     }
+    .width('100%').height('100%').backgroundColor(ZHColor.SURFACE)
+  }
 
-    // ---- Note child item editor ----
-    if (this.item.isNote() && this.noteLoaded) {
-      Column() {
-        this._itemHeader()
+  @Builder
+  _attachmentChildPane() {
+    Column() {
+      this._itemHeader()
+      Scroll() {
         Column() {
-          TextInput({ placeholder: 'Note title', text: this.selectedNoteTitle })
-            .fontSize(15).height(38)
-            .margin({ left: 12, right: 12, top: 10, bottom: 8 })
-            .onChange((value: string) => { this.selectedNoteTitle = value; })
-          AbstractEditor({
-            label: 'NOTE',
-            text: this.selectedNoteText,
-            minHeight: 220,
-            onChange: (v: string) => { this.selectedNoteText = v; },
-          })
+          this._sectionHeader('ATTACHMENT METADATA')
+          this._readOnlyRow('Link Mode', this._linkModeLabel(this.item.attachmentLinkMode))
+          this._readOnlyRow('Parent Item', this.item.parentKey ?? '(none)')
+          this._editRow('Title', this.attachTitle, (v: string) => { this.attachTitle = v; this._updateAttachmentDirty(); })
+          this._editRow('Content Type', this.attachContentType, (v: string) => { this.attachContentType = v; this._updateAttachmentDirty(); })
+          this._editRow('Path', this.attachPath, (v: string) => { this.attachPath = v; this._updateAttachmentDirty(); })
+          this._editRow('URL', this.attachUrl, (v: string) => { this.attachUrl = v; this._updateAttachmentDirty(); })
+          Blank().height(20)
           Row() {
-            Button('Save Note').fontSize(12).height(32)
-              .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
-              .onClick(() => { this._saveNoteForChild(); })
-            Button('Delete Note').fontSize(12).height(32).margin({ left: 8 })
+            if (this.attachSaveStatus === 'success') {
+              Text(this.attachSaveMessage).fontSize(11).fontColor('#2E7D32').layoutWeight(1)
+            } else if (this.attachSaveStatus === 'error') {
+              Text(this.attachSaveMessage).fontSize(11).fontColor('#C62828').layoutWeight(1)
+            } else if (this.attachIsDirty) {
+              Text('Unsaved changes').fontSize(11).fontColor(ZHColor.WARNING).layoutWeight(1)
+            } else { Blank().layoutWeight(1) }
+            Button('Reset').fontSize(11).height(28).margin({ right: 6 })
+              .enabled(this.attachIsDirty).onClick(() => { this._initAttachmentDraft(); })
+            Button('Open').fontSize(11).height(28).margin({ right: 6 })
+              .backgroundColor(ZHColor.SURFACE_ALT).fontColor(ZHColor.TEXT)
+              .onClick(() => {
+                let filePath = this.attachPath.length > 0 ? this.attachPath :
+                  (this.attachUrl.length > 0 ? this.attachUrl : '');
+                let title = this.attachTitle || this.item.itemData.get('title') || 'Attachment';
+                readerManager.open(this.item.id ?? 0, this.item.key ?? '', title, filePath, 1);
+                router.pushUrl({ url: 'reader/ReaderPage', params: { itemKey: this.item.key ?? '' } });
+              })
+            Button('Save').fontSize(11).height(28)
+              .enabled(this.attachIsDirty).backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+              .onClick(() => { this._saveAttachment(); })
+            Button('Delete').fontSize(11).height(28).margin({ left: 6 })
               .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
-              .onClick(() => { this._deleteCurrentNote(); })
+              .onClick(() => { this._deleteCurrentAttachment(); })
           }
-          .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+          .padding({ left: 14, right: 14, top: 8, bottom: 8 })
         }
-        .layoutWeight(1)
       }
-      .width('100%').height('100%').backgroundColor(ZHColor.SURFACE)
-      return
+      .layoutWeight(1).scrollBar(BarState.Auto)
     }
+    .width('100%').height('100%')
+  }
 
-    // ---- Default regular item pane ----
+  @Builder
+  _noteChildPane() {
+    Column() {
+      this._itemHeader()
+      Column() {
+        TextInput({ placeholder: 'Note title', text: this.selectedNoteTitle })
+          .fontSize(15).height(38)
+          .margin({ left: 12, right: 12, top: 10, bottom: 8 })
+          .onChange((value: string) => { this.selectedNoteTitle = value; })
+        AbstractEditor({
+          label: 'NOTE',
+          text: this.selectedNoteText,
+          minHeight: 220,
+          onChange: (v: string) => { this.selectedNoteText = v; },
+        })
+        Row() {
+          Button('Save Note').fontSize(12).height(32)
+            .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+            .onClick(() => { this._saveNoteForChild(); })
+          Button('Delete Note').fontSize(12).height(32).margin({ left: 8 })
+            .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
+            .onClick(() => { this._deleteCurrentNote(); })
+        }
+        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      }
+      .layoutWeight(1)
+    }
+    .width('100%').height('100%')
+  }
+
+  @Builder
+  _loadingNotePane() {
+    Column() {
+      Text('Loading note...')
+        .fontSize(14).fontColor(ZHColor.TEXT_MUTED).margin({ top: 40 })
+    }
+    .width('100%').height('100%')
+  }
+
+  @Builder
+  _regularItemPane() {
     Row() {
       Column() {
         this._sidenavButton('details', 'Info')
@@ -255,16 +279,13 @@ export struct ItemPaneView {
         this._sidenavButton('related', 'Related')
         Blank().layoutWeight(1)
       }
-      .width(88)
-      .height('100%')
+      .width(88).height('100%')
       .padding({ top: 8, left: 6, right: 6, bottom: 8 })
       .backgroundColor(ZHColor.SURFACE_ALT)
       .border({ width: { right: 1 }, color: ZHColor.BORDER })
 
       Column() {
         this._itemHeader()
-
-        // View switcher tabs for compact familiarity with Zotero sections
         Row() {
           this._topTab('details', 'Info')
           this._topTab('attachments', 'Files')
@@ -272,14 +293,11 @@ export struct ItemPaneView {
           this._topTab('tags', 'Tags')
           this._topTab('related', 'Related')
         }
-        .width('100%')
-        .border({ width: { bottom: 1 }, color: ZHColor.BORDER_SOFT })
+        .width('100%').border({ width: { bottom: 1 }, color: ZHColor.BORDER_SOFT })
 
-        // Content area
         if (this.selectedView === 'details') {
           Scroll() {
             Column() {
-              // abstractNote is now edited inside ItemDetailsForm's FieldEditor.
               ItemDetailsForm({
                 item: this.item,
                 itemKey: this.item.key ?? '',
@@ -289,18 +307,14 @@ export struct ItemPaneView {
             }
             .width('100%')
           }
-          .layoutWeight(1)
-          .scrollBar(BarState.Auto)
+          .layoutWeight(1).scrollBar(BarState.Auto)
         } else if (this.selectedView === 'attachments') {
           AttachmentsList({
             attachments: $attachments,
             onAttachmentOpen: (id: number) => {
               let attachment: AttachmentEntry | null = null;
               for (let i = 0; i < this.attachments.length; i++) {
-                if (this.attachments[i].id === id) {
-                  attachment = this.attachments[i];
-                  break;
-                }
+                if (this.attachments[i].id === id) { attachment = this.attachments[i]; break; }
               }
               let itemKey = attachment?.key ?? this.item.key ?? `attachment-${id}`;
               let filePath = attachment?.path ?? this.item.attachmentPath ?? '';
@@ -308,36 +322,26 @@ export struct ItemPaneView {
               readerManager.open(this.item.id ?? id, itemKey, title, filePath, 1);
               router.pushUrl({ url: 'reader/ReaderPage', params: { itemKey: itemKey } });
             },
-            onAttachmentAdd: () => {
-              this._addLinkedUrlAttachment();
-            },
-            onAttachmentDelete: (key: string) => {
-              this._deleteAttachment(key);
-            },
+            onAttachmentAdd: () => { this._addLinkedUrlAttachment(); },
+            onAttachmentDelete: (key: string) => { this._deleteAttachment(key); },
           })
           .layoutWeight(1)
         } else if (this.selectedView === 'notes') {
           NotesList({
             notes: $notes,
             onNoteOpen: (id: number) => { this._openNote(id); },
-            onNoteAdd: () => {
-              this._createNote();
-            },
+            onNoteAdd: () => { this._createNote(); },
             onNoteDelete: (id: number) => { this._deleteNote(id); },
           })
           .layoutWeight(1)
         } else if (this.selectedView === 'tags') {
           Scroll() {
             TagChipEditor({
-              tags: $tags,
-              readOnly: false,
-              onTagsChange: (tags: ZoteroTag[]) => {
-                this._saveTags(tags);
-              },
+              tags: $tags, readOnly: false,
+              onTagsChange: (tags: ZoteroTag[]) => { this._saveTags(tags); },
             })
           }
-          .layoutWeight(1)
-          .scrollBar(BarState.Auto)
+          .layoutWeight(1).scrollBar(BarState.Auto)
         } else if (this.selectedView === 'related') {
           RelatedItems({
             related: $related,
@@ -349,27 +353,18 @@ export struct ItemPaneView {
         } else if (this.selectedView === 'note') {
           Column() {
             TextInput({ placeholder: 'Note title', text: this.selectedNoteTitle })
-              .fontSize(15)
-              .height(38)
+              .fontSize(15).height(38)
               .margin({ left: 12, right: 12, top: 10, bottom: 8 })
               .onChange((value: string) => { this.selectedNoteTitle = value; })
             AbstractEditor({
-              label: 'NOTE',
-              text: this.selectedNoteText,
-              minHeight: 220,
+              label: 'NOTE', text: this.selectedNoteText, minHeight: 220,
               onChange: (v: string) => { this.selectedNoteText = v; },
             })
             Row() {
-              Button('Save Note')
-                .fontSize(12)
-                .height(32)
+              Button('Save Note').fontSize(12).height(32)
                 .onClick(() => { this._saveNote(); })
-              Button('Delete Note')
-                .fontSize(12)
-                .height(32)
-                .margin({ left: 8 })
-                .backgroundColor(ZHColor.BRAND_SOFT)
-                .fontColor(ZHColor.BRAND)
+              Button('Delete Note').fontSize(12).height(32).margin({ left: 8 })
+                .backgroundColor(ZHColor.BRAND_SOFT).fontColor(ZHColor.BRAND)
                 .onClick(() => { this._deleteNote(this.selectedNoteID); })
             }
             .padding({ left: 12, right: 12, top: 10, bottom: 10 })
@@ -377,9 +372,7 @@ export struct ItemPaneView {
           .layoutWeight(1)
         }
       }
-      .layoutWeight(1)
-      .height('100%')
-      .backgroundColor(ZHColor.SURFACE)
+      .layoutWeight(1).height('100%').backgroundColor(ZHColor.SURFACE)
     }
     .width('100%').height('100%')
   }

@@ -95,7 +95,6 @@ export struct PdfPageView {
             AnnotationRect({
               annotation: ann,
               isSelected: ann.id === this.selectedAnnotationID,
-              themeMode: this.themeMode,
               onTap: (a: PdfAnnotation) => {
                 if (this.onAnnotationTap) { this.onAnnotationTap(a); }
               },

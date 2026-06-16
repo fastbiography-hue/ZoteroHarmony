@@ -236,13 +236,13 @@ struct TreeRow {
                 }
                 Text(this.row.title)
                   .fontSize(14)
+                  .fontColor(this.isSelected ? ZHColor.TEXT :
+                    (this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT))
+                  .fontWeight(this.row.rowType === 'item' ? FontWeight.Medium : FontWeight.Normal)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                   .layoutWeight(1)
               }
               .width('100%')
-                .fontColor(this.isSelected ? ZHColor.TEXT :
-                  (this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT))
-                .fontWeight(this.row.rowType === 'item' ? FontWeight.Medium : FontWeight.Normal)
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               if (this.row.subtitle.length > 0) {
                 Text(this.row.subtitle)
                   .fontSize(11)
