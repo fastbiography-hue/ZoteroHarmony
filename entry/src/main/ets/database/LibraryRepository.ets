@@ -1587,14 +1587,15 @@ export class LibraryRepository {
           }
         }
       } else if (itemType === 'annotation') {
+        // Query by annotationID (the item's key), NOT by parentItemID.
+        // itemAnnotations.annotationID is the annotation item's key.
         let annRows = await this.db.queryAsync(
           `SELECT annotationID, parentItemID, type, pageIndex, x, y, width, height,
                   color, text, comment, authorName, sortIndex, dateModified
-           FROM itemAnnotations WHERE parentItemID = ?`,
-          [itemID]
+           FROM itemAnnotations WHERE annotationID = ?`,
+          [itemKey]
         );
         if (annRows.length > 0) {
-          // TODO: full annotation-as-item support; currently output first annotation
           let ann = annRows[0];
           obj['annotationType'] = this.toString(ann['type'], 'highlight');
           obj['annotationText'] = this.toString(ann['text'], '');
@@ -1606,7 +1607,19 @@ export class LibraryRepository {
             x: this.toFloat(ann['x']), y: this.toFloat(ann['y']),
             width: this.toFloat(ann['width']), height: this.toFloat(ann['height']),
           });
+          // Resolve parentItem key
+          let parentAnnID = this.toNullableNumber(ann['parentItemID']);
+          if (parentAnnID !== null) {
+            let pk = await this.db.valueQueryAsync(
+              `SELECT key FROM items WHERE itemID = ?`, [parentAnnID]
+            );
+            obj['parentItem'] = this.toString(pk, '') || false;
+          }
         }
+        // TODO: when saveAnnotation() creates first-class annotation items
+        // in the items table, this path will produce full annotation JSON.
+        // Currently, saveAnnotation() still writes via parent attachment,
+        // so annotation items may not have an itemAnnotations row.
       }
 
       // Deleted / trash flag

@@ -68,6 +68,15 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Test-only entry point that directly invokes the upload pipeline
+   * without the outer sync loop.  Exposed so tests can verify
+   * upload behaviour in isolation.
+   */
+  async startUploadForTest(): Promise<UploadResult> {
+    return this._startUpload();
+  }
+
   // Main loop  Ref: syncEngine.js:120-263
   private async _runSync(): Promise<boolean> {
     if (this.library.libraryVersion <= 0) {
@@ -153,6 +162,18 @@ export class SyncEngine {
             await repo.removeFromSyncQueue(lid, ot, batchKeys);
             continue;
           }
+          // Detect keys in batchKeys that are missing from objects
+          let objectKeys = this.extractObjectKeys(objects);
+          let missingKeys: string[] = [];
+          for (let bi = 0; bi < batchKeys.length; bi++) {
+            if (objectKeys.indexOf(batchKeys[bi]) < 0) {
+              missingKeys.push(batchKeys[bi]);
+            }
+          }
+          if (missingKeys.length > 0) {
+            await repo.removeFromSyncQueue(lid, ot, missingKeys);
+          }
+
           let response = await this.apiUpload.uploadObjects(
             lt, ltid, this.library.libraryVersion, ot, objects
           );
@@ -184,6 +205,18 @@ export class SyncEngine {
     }
 
     return hasWork ? UploadResult.SUCCESS : UploadResult.NOTHING_TO_UPLOAD;
+  }
+
+  /** Extract keys from an array of API objects (supports wrapped and unwrapped). */
+  private extractObjectKeys(objects: Record<string, Object>[]): string[] {
+    let keys: string[] = [];
+    for (let i = 0; i < objects.length; i++) {
+      let obj = objects[i];
+      let data = obj['data'] as Record<string, Object> | undefined;
+      let k = (data?.['key'] ?? obj['key'] ?? '') as string;
+      if (k.length > 0) { keys.push(k); }
+    }
+    return keys;
   }
 
   // Download  Ref: syncEngine.js:280-381
