@@ -29,6 +29,14 @@ import { IdentifierLookup } from '../import/IdentifierLookup.ets';
 /** Tab/page index for phone mode navigation. */
 enum PhoneView { COLLECTIONS, ITEMS, DETAIL }
 
+class IdentifierCreateEntry {
+  idType: string = '';
+  value: string = '';
+  itemType: string = '';
+  fieldName: string = '';
+  title: string = '';
+}
+
 const ITEM_TYPE_OPTIONS: [string, string][] = [
   ['Journal', 'journalArticle'], ['Book', 'book'], ['Book Sect.', 'bookSection'],
   ['Conf.', 'conferencePaper'], ['Thesis', 'thesis'], ['Report', 'report'], ['Web Page', 'webpage'],
@@ -574,7 +582,7 @@ struct MainPage {
               .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
               .margin({ bottom: 10 })
             // Type selector
-            Row() {
+            Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(ITEM_TYPE_OPTIONS, (opt: [string, string]) => {
                 Button(opt[0])
                   .fontSize(12).height(30)
@@ -584,7 +592,8 @@ struct MainPage {
                   .onClick(() => { this.newItemDialogType = opt[1]; })
               }, (opt: [string, string]): string => opt[1])
             }
-            .width('100%').flexWrap(FlexWrap.Wrap).margin({ bottom: 10 })
+            .width('100%')
+            .margin({ bottom: 10 })
             TextInput({ placeholder: 'Title', text: this.newItemDialogTitle })
               .fontSize(14).height(38).width('100%')
               .onChange((value: string) => { this.newItemDialogTitle = value; })
@@ -700,13 +709,16 @@ struct MainPage {
   /** Parse identifier lines and create stub items. */
   private _addByIdentifier(): void {
     let lines = this.identifierDialogText.split('\n');
-    let entries: { idType: string; value: string; itemType: string; fieldName: string; title: string }[] = [];
+    let entries: IdentifierCreateEntry[] = [];
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i].trim();
       if (line.length === 0) { continue; }
       let idType = IdentifierLookup.classify(line);
       if (idType === 'unknown') { continue; }
-      let entry = { idType: idType, value: line, itemType: 'journalArticle', fieldName: '', title: '' };
+      let entry = new IdentifierCreateEntry();
+      entry.idType = idType;
+      entry.value = line;
+      entry.itemType = 'journalArticle';
       if (idType === 'doi') { entry.itemType = 'journalArticle'; entry.fieldName = 'DOI'; entry.title = 'DOI ' + line; }
       else if (idType === 'isbn') { entry.itemType = 'book'; entry.fieldName = 'ISBN'; entry.title = 'ISBN ' + line; }
       else if (idType === 'pmid') { entry.itemType = 'journalArticle'; entry.fieldName = 'extra'; entry.title = 'PMID ' + line; }
