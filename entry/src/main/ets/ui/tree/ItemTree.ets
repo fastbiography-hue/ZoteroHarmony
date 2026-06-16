@@ -30,6 +30,7 @@ export interface ItemTreeRowModel {
   isExpandable: boolean;
   isExpanded: boolean;
   childCount: number;
+  isPendingSync: boolean;
 }
 
 /**
@@ -73,6 +74,7 @@ export function buildItemTreeRows(
       isExpandable: childCount > 0,
       isExpanded: isExpanded,
       childCount: childCount,
+      isPendingSync: false,  // filled by applyPendingSyncToRows
     });
 
     if (isExpanded && childList.length > 0) {
@@ -93,11 +95,25 @@ export function buildItemTreeRows(
           isExpandable: false,
           isExpanded: false,
           childCount: 0,
+          isPendingSync: false,  // filled by applyPendingSyncToRows
         });
       }
     }
   }
   return rows;
+}
+
+/**
+ * Apply pending sync flags to rows from a pending key map.
+ * Pure function — does not access DB.
+ */
+export function applyPendingSyncToRows(
+  rows: ItemTreeRowModel[],
+  pendingMap: Record<string, boolean>
+): void {
+  for (let i = 0; i < rows.length; i++) {
+    rows[i].isPendingSync = pendingMap[rows[i].key] === true;
+  }
 }
 
 /** Extract all non-empty parent keys from items for child lookups. */
@@ -294,8 +310,17 @@ struct TreeRow {
               .borderRadius(5)
               .margin({ right: 8 })
             Column() {
-              Text(this.row.title)
-                .fontSize(14)
+              Row() {
+                if (this.row.isPendingSync) {
+                  Text('●')
+                    .fontSize(8).fontColor('#E65100')
+                    .margin({ right: 4 })
+                }
+                Text(this.row.title)
+                  .fontSize(14)
+                  .layoutWeight(1)
+              }
+              .width('100%')
                 .fontColor(this.isSelected ? ZHColor.TEXT :
                   (this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT))
                 .fontWeight(this.row.rowType === 'item' ? FontWeight.Medium : FontWeight.Normal)
@@ -423,6 +448,8 @@ export struct ItemTree {
   @State sortKey: string = 'title';
   @State sortAsc: boolean = true;
   @StorageLink('zotero_theme') themeMode: string = 'light';
+  /** Pending sync key map — applied to rows after rebuild. */
+  @Prop pendingSyncMap: Record<string, boolean> = {};
   onItemSelected?: (item: ItemModel) => void;
   onItemAction?: (action: string, item: ItemModel) => void;
 
@@ -572,6 +599,11 @@ export struct ItemTree {
     });
   }
 
+  private _setRows(rows: ItemTreeRowModel[]): void {
+    applyPendingSyncToRows(rows, this.pendingSyncMap);
+    this.rows = rows;
+  }
+
   private _toggleExpand(key: string): void {
     let idx = this.expandedKeys.indexOf(key);
     if (idx >= 0) {
@@ -589,7 +621,7 @@ export struct ItemTree {
   private _rebuildRows(): void {
     let parentKeys = collectParentKeysForChildLookup(this.items);
     if (parentKeys.length === 0) {
-      this.rows = buildItemTreeRows(this.items, [], this.expandedKeys);
+      this._setRows(buildItemTreeRows(this.items, [], this.expandedKeys));
       return;
     }
     let repo = new LibraryRepository();
@@ -597,10 +629,10 @@ export struct ItemTree {
     repo.open(context).then(() => {
       return repo.listChildRowsForItems(parentKeys);
     }).then((childRows: ItemChildSummary[]) => {
-      this.rows = buildItemTreeRows(this.items, childRows, this.expandedKeys);
+      this._setRows(buildItemTreeRows(this.items, childRows, this.expandedKeys));
       repo.close();
     }).catch((_err: Error) => {
-      this.rows = buildItemTreeRows(this.items, [], this.expandedKeys);
+      this._setRows(buildItemTreeRows(this.items, [], this.expandedKeys));
       repo.close();
     });
   }

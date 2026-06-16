@@ -22,10 +22,17 @@ import { QuickSearchBar } from '../ui/QuickSearchBar.ets';
 import { ZHColor, ZHMetric } from '../theme/ThemeConstants.ets';
 import { zoteroCommandRegistry } from '../commands/ZoteroCommandRegistry.ets';
 import { ZoteroCommandContext, ZoteroCommands } from '../commands/ZoteroCommands.ets';
-import { LibraryRepository } from '../database/LibraryRepository.ets';
+import { LibraryRepository, PendingSyncSummary } from '../database/LibraryRepository.ets';
 
 /** Tab/page index for phone mode navigation. */
 enum PhoneView { COLLECTIONS, ITEMS, DETAIL }
+
+function formatPendingSyncSummary(summary: PendingSyncSummary): string {
+  let parts: string[] = [];
+  if (summary.queueCount > 0) { parts.push(`${summary.queueCount} pending`); }
+  if (summary.deleteCount > 0) { parts.push(`${summary.deleteCount} deletions`); }
+  return parts.join(', ');
+}
 
 @Entry
 @Component
@@ -51,6 +58,8 @@ struct MainPage {
   @State collectionDialogTargetKey: string = '';
   @State collectionDialogTargetType: string = '';
   @StorageLink('zotero_theme') themeMode: string = 'light';
+  @State pendingSyncMap: Record<string, boolean> = {};
+  @State pendingSyncSummaryText: string = '';
   private syncRunner: SyncRunner | null = null;
 
   aboutToAppear(): void {
@@ -62,6 +71,7 @@ struct MainPage {
       this.syncRunner = new SyncRunner('https://api.zotero.org', getContext(this).getApplicationContext());
       this.syncRunner.loginWithApiKey(apiKey);
     }
+    this._refreshPendingSyncState();
   }
 
   build() {
@@ -282,6 +292,7 @@ struct MainPage {
                 return;
               }
             },
+            pendingSyncMap: this.pendingSyncMap,
           })
           .layoutWeight(1)
         }
@@ -362,6 +373,7 @@ struct MainPage {
             item: $currentItem,
             selectedView: $selectedView,
             onItemSaved: () => { this._onItemSaved(); },
+            currentItemPendingSync: this.pendingSyncMap[this.currentItem.key ?? ''] === true,
           })
           .layoutWeight(1)
         }
@@ -379,7 +391,13 @@ struct MainPage {
           .margin({ right: 6 })
 
         if (this.loggedIn) {
-          Text(this.syncStatus === 'idle' ? 'Ready to sync' :
+          // Pending sync count
+          if (this.pendingSyncSummaryText.length > 0) {
+            Text(this.pendingSyncSummaryText)
+              .fontSize(12).fontColor('#E65100')
+              .margin({ right: 12 })
+          }
+          Text(this.syncStatus === 'idle' ? (this.pendingSyncSummaryText.length === 0 ? 'All synced' : 'Ready to sync') :
             (this.syncStatus === 'checking' ? 'Checking libraries' :
               (this.syncStatus === 'syncing' ? 'Syncing library' :
                 (this.syncStatus === 'downloading' ? 'Downloading changes' :
@@ -446,16 +464,17 @@ struct MainPage {
 
   private _onItemSaved(): void {
     this.revision++;
-    // Refresh currentItem from DB to pick up changes from the save
     let itemKey = this.currentItem.key ?? '';
-    if (itemKey.length === 0) { return; }
-    let repo = new LibraryRepository();
-    repo.open(getContext(this).getApplicationContext()).then(() => {
-      return repo.getItemByKey(itemKey);
-    }).then((refreshed: ItemModel | null) => {
-      if (refreshed) { this.currentItem = refreshed; }
-      repo.close();
-    }).catch((_err: Error) => { repo.close(); });
+    if (itemKey.length > 0) {
+      let repo = new LibraryRepository();
+      repo.open(getContext(this).getApplicationContext()).then(() => {
+        return repo.getItemByKey(itemKey);
+      }).then((refreshed: ItemModel | null) => {
+        if (refreshed) { this.currentItem = refreshed; }
+        repo.close();
+      }).catch((_err: Error) => { repo.close(); });
+    }
+    this._refreshPendingSyncState();
   }
 
   private _doSync(): void {
@@ -468,11 +487,30 @@ struct MainPage {
         if (!ok && this.syncRunner) {
           AppStore.lastSyncTime = this.syncRunner.syncStatus.lastSyncTimestamp;
         }
+        this._refreshPendingSyncState();
+        this.revision++;
       }).catch((_err: Error) => {
         this.syncStatus = 'error';
         AppStore.syncStatus = 'error';
+        this._refreshPendingSyncState();
       });
     }
+  }
+
+  private _refreshPendingSyncState(): void {
+    let repo = new LibraryRepository();
+    let context = getContext(this).getApplicationContext();
+    repo.open(context).then(() => {
+      return repo.getPendingSyncSummary();
+    }).then((summary: PendingSyncSummary) => {
+      this.pendingSyncSummaryText = formatPendingSyncSummary(summary);
+      return repo.getPendingSyncKeySet();
+    }).then((map: Record<string, boolean>) => {
+      this.pendingSyncMap = map;
+      repo.close();
+    }).catch((_err: Error) => {
+      repo.close();
+    });
   }
 
   private _executeCommand(commandID: string): void {
@@ -482,6 +520,7 @@ struct MainPage {
         this.selectedItemKeys = [];
         this.currentItem = new ItemModel();
       }
+      this._refreshPendingSyncState();
     }).catch((_err: Error) => {
     });
   }

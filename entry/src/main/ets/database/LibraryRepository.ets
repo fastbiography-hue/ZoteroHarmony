@@ -33,6 +33,17 @@ export interface SavedSearchQueryData {
 
 export type RemoteObjectType = 'collection' | 'item' | 'search';
 
+export interface PendingSyncSummary {
+  queueCount: number;
+  deleteCount: number;
+  itemQueueCount: number;
+  collectionQueueCount: number;
+  searchQueueCount: number;
+  itemDeleteCount: number;
+  collectionDeleteCount: number;
+  searchDeleteCount: number;
+}
+
 /** Lightweight child-row summary for item-tree hierarchy. */
 export interface ItemChildSummary {
   key: string;
@@ -1615,6 +1626,72 @@ export class LibraryRepository {
       `SELECT COUNT(*) FROM syncDeleteLog WHERE libraryID = ?`, [libraryID]
     ));
     return qCount > 0 || dCount > 0;
+  }
+
+  /** Return all keys from syncQueue + syncDeleteLog as a lookup map. */
+  async getPendingSyncKeySet(libraryID: number = 1): Promise<Record<string, boolean>> {
+    let map: Record<string, boolean> = {};
+    let qRows = await this.db.queryAsync(
+      `SELECT key FROM syncQueue WHERE libraryID = ?`, [libraryID]
+    );
+    for (let i = 0; i < qRows.length; i++) {
+      map[this.toString(qRows[i]['key'], '')] = true;
+    }
+    let dRows = await this.db.queryAsync(
+      `SELECT key FROM syncDeleteLog WHERE libraryID = ?`, [libraryID]
+    );
+    for (let i = 0; i < dRows.length; i++) {
+      map[this.toString(dRows[i]['key'], '')] = true;
+    }
+    return map;
+  }
+
+  /** Check whether a specific object is pending sync. */
+  async isObjectPendingSync(libraryID: number, objectType: RemoteObjectType, key: string): Promise<boolean> {
+    let qCount = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM syncQueue WHERE libraryID = ? AND objectType = ? AND key = ?`,
+      [libraryID, objectType, key]
+    ));
+    if (qCount > 0) { return true; }
+    let dCount = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM syncDeleteLog WHERE libraryID = ? AND objectType = ? AND key = ?`,
+      [libraryID, objectType, key]
+    ));
+    return dCount > 0;
+  }
+
+  /** Return counts by objectType for syncQueue and syncDeleteLog. */
+  async getPendingSyncSummary(libraryID: number = 1): Promise<PendingSyncSummary> {
+    let summary: PendingSyncSummary = {
+      queueCount: 0, deleteCount: 0,
+      itemQueueCount: 0, collectionQueueCount: 0, searchQueueCount: 0,
+      itemDeleteCount: 0, collectionDeleteCount: 0, searchDeleteCount: 0,
+    };
+    let qRows = await this.db.queryAsync(
+      `SELECT objectType, COUNT(*) AS cnt FROM syncQueue WHERE libraryID = ? GROUP BY objectType`,
+      [libraryID]
+    );
+    for (let i = 0; i < qRows.length; i++) {
+      let ot = this.toString(qRows[i]['objectType'], '');
+      let c = this.toNumber(qRows[i]['cnt']);
+      summary.queueCount += c;
+      if (ot === 'item') { summary.itemQueueCount = c; }
+      else if (ot === 'collection') { summary.collectionQueueCount = c; }
+      else if (ot === 'search') { summary.searchQueueCount = c; }
+    }
+    let dRows = await this.db.queryAsync(
+      `SELECT objectType, COUNT(*) AS cnt FROM syncDeleteLog WHERE libraryID = ? GROUP BY objectType`,
+      [libraryID]
+    );
+    for (let i = 0; i < dRows.length; i++) {
+      let ot = this.toString(dRows[i]['objectType'], '');
+      let c = this.toNumber(dRows[i]['cnt']);
+      summary.deleteCount += c;
+      if (ot === 'item') { summary.itemDeleteCount = c; }
+      else if (ot === 'collection') { summary.collectionDeleteCount = c; }
+      else if (ot === 'search') { summary.searchDeleteCount = c; }
+    }
+    return summary;
   }
 
   // ==================================================================

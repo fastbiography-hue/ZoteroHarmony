@@ -60,6 +60,7 @@ export struct ItemPaneView {
   @State initialAttachUrl: string = '';
   @Watch('_refreshFromStore')
   @StorageLink('zotero_libraryRevision') libraryRevision: number = 0;
+  @Prop currentItemPendingSync: boolean = false;
   onItemSaved?: () => void;
 
   aboutToAppear(): void {
@@ -435,6 +436,11 @@ export struct ItemPaneView {
             }
           }
           .width('100%')
+          if (this.currentItemPendingSync) {
+            Text('● Pending sync')
+              .fontSize(11).fontColor('#E65100')
+              .margin({ top: 3 })
+          }
         }
         .layoutWeight(1)
       }
