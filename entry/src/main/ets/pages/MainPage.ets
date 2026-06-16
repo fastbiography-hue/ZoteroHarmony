@@ -201,7 +201,7 @@ struct MainPage {
         Button('+').fontSize(20).width(ZHMetric.HIT_TARGET).height(ZHMetric.HIT_TARGET)
           .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE).borderRadius(20)
           .margin({ right: 6 })
-          .onClick(() => { this.newItemDialogVisible = true; })
+          .onClick(() => { this._openNewItemDialog(); })
 
         Button('Import').fontSize(12).height(36)
           .margin({ right: 6 })
@@ -213,7 +213,7 @@ struct MainPage {
           .margin({ right: 6 })
           .backgroundColor(this.themeMode === 'dark' ? '#242A33' : ZHColor.SURFACE_ALT)
           .fontColor(this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT)
-          .onClick(() => { this.identifierDialogVisible = true; })
+          .onClick(() => { this._openIdentifierDialog(); })
 
         Button('Note').fontSize(12).height(36)
           .margin({ right: 6 })
@@ -256,14 +256,7 @@ struct MainPage {
               .height(30)
               .backgroundColor(ZHColor.TRANSPARENT)
               .fontColor(ZHColor.TEXT_MUTED)
-              .onClick(() => {
-                this.collectionDialogMode = 'new';
-                this.collectionDialogTargetKey = '';
-                this.collectionDialogTitle = 'New Collection';
-                this.collectionDialogValue = '';
-                this.collectionDialogError = '';
-                this.collectionDialogVisible = true;
-              })
+              .onClick(() => { this._openNewCollectionDialog(); })
           }
           .width('100%')
           .height(ZHMetric.HEADER_HEIGHT)
@@ -559,11 +552,13 @@ struct MainPage {
             }
             Row() {
               Button('Cancel').fontSize(12).height(32)
-                .onClick(() => { this.collectionDialogVisible = false; })
+                .enabled(!this.collectionDialogBusy)
+                .onClick(() => { this._closeCollectionDialog(); })
               Blank()
-              Button('Create').fontSize(12).height(32)
+              Button(this.collectionDialogBusy ? 'Saving…' : 'Create').fontSize(12).height(32)
                 .backgroundColor(ZHColor.BRAND)
                 .fontColor(ZHColor.TEXT_INVERSE)
+                .enabled(!this.collectionDialogBusy)
                 .onClick(() => { this._submitCollectionDialog(); })
             }
             .width('100%')
@@ -602,12 +597,18 @@ struct MainPage {
             TextInput({ placeholder: 'Title', text: this.newItemDialogTitle })
               .fontSize(14).height(38).width('100%')
               .onChange((value: string) => { this.newItemDialogTitle = value; })
+            if (this.newItemDialogError.length > 0) {
+              Text(this.newItemDialogError)
+                .fontSize(12).fontColor('#C62828').margin({ top: 6 })
+            }
             Row() {
               Button('Cancel').fontSize(12).height(32)
-                .onClick(() => { this.newItemDialogVisible = false; })
+                .enabled(!this.newItemDialogBusy)
+                .onClick(() => { this._closeNewItemDialog(); })
               Blank()
-              Button('Create').fontSize(12).height(32)
+              Button(this.newItemDialogBusy ? 'Creating…' : 'Create').fontSize(12).height(32)
                 .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+                .enabled(!this.newItemDialogBusy)
                 .onClick(() => { this._createNewItem(); })
             }
             .width('100%').margin({ top: 12 })
@@ -638,10 +639,12 @@ struct MainPage {
             }
             Row() {
               Button('Cancel').fontSize(12).height(32)
-                .onClick(() => { this.identifierDialogVisible = false; })
+                .enabled(!this.identifierDialogBusy)
+                .onClick(() => { this._closeIdentifierDialog(); })
               Blank()
-              Button('Add').fontSize(12).height(32)
+              Button(this.identifierDialogBusy ? 'Adding…' : 'Add').fontSize(12).height(32)
                 .backgroundColor(ZHColor.BRAND).fontColor(ZHColor.TEXT_INVERSE)
+                .enabled(!this.identifierDialogBusy)
                 .onClick(() => { this._addByIdentifier(); })
             }
             .width('100%').margin({ top: 12 })
@@ -656,6 +659,62 @@ struct MainPage {
     .width('100%').height('100%')
     .backgroundColor(this.themeMode === 'dark' ? '#11151B' : ZHColor.SURFACE)
   }
+
+  // ---- Dialog open/close helpers ----
+
+  private _openNewCollectionDialog(): void {
+    this.collectionDialogMode = 'new';
+    this.collectionDialogTargetKey = '';
+    this.collectionDialogTargetType = '';
+    this.collectionDialogTitle = 'New Collection';
+    this.collectionDialogValue = '';
+    this.collectionDialogError = '';
+    this.collectionDialogBusy = false;
+    this.collectionDialogVisible = true;
+  }
+
+  private _closeCollectionDialog(): void {
+    this.collectionDialogVisible = false;
+    this.collectionDialogMode = '';
+    this.collectionDialogTargetKey = '';
+    this.collectionDialogTargetType = '';
+    this.collectionDialogTitle = '';
+    this.collectionDialogValue = '';
+    this.collectionDialogError = '';
+    this.collectionDialogBusy = false;
+  }
+
+  private _openNewItemDialog(): void {
+    this.newItemDialogTitle = '';
+    this.newItemDialogType = 'journalArticle';
+    this.newItemDialogError = '';
+    this.newItemDialogBusy = false;
+    this.newItemDialogVisible = true;
+  }
+
+  private _closeNewItemDialog(): void {
+    this.newItemDialogVisible = false;
+    this.newItemDialogTitle = '';
+    this.newItemDialogType = 'journalArticle';
+    this.newItemDialogError = '';
+    this.newItemDialogBusy = false;
+  }
+
+  private _openIdentifierDialog(): void {
+    this.identifierDialogText = '';
+    this.identifierDialogError = '';
+    this.identifierDialogBusy = false;
+    this.identifierDialogVisible = true;
+  }
+
+  private _closeIdentifierDialog(): void {
+    this.identifierDialogVisible = false;
+    this.identifierDialogText = '';
+    this.identifierDialogError = '';
+    this.identifierDialogBusy = false;
+  }
+
+  // ---- Core workflow handlers ----
 
   private _onItemSaved(): void {
     this.revision++;
@@ -730,9 +789,7 @@ struct MainPage {
       await repo.open(getContext(this).getApplicationContext());
       let newKey = await repo.createItem(collectionKey, itemType, title);
       await repo.close();
-      this.newItemDialogVisible = false;
-      this.newItemDialogTitle = '';
-      this.newItemDialogType = 'journalArticle';
+      this._closeNewItemDialog();
       this.revision++;
       this._refreshPendingSyncState();
       await this._selectItemByKey(newKey);
@@ -789,9 +846,7 @@ struct MainPage {
         }
       }
       await repo.close();
-      this.identifierDialogVisible = false;
-      this.identifierDialogText = '';
-      this.identifierDialogError = '';
+      this._closeIdentifierDialog();
       this.revision++;
       this._refreshPendingSyncState();
       if (createdKeys.length > 0) {
@@ -894,6 +949,8 @@ struct MainPage {
       this.collectionDialogTargetType = row.type;
       this.collectionDialogTitle = row.type === 'search' ? 'Rename Saved Search' : 'Rename Collection';
       this.collectionDialogValue = row.name;
+      this.collectionDialogError = '';
+      this.collectionDialogBusy = false;
       this.collectionDialogVisible = true;
       return;
     }
@@ -903,6 +960,8 @@ struct MainPage {
       this.collectionDialogTargetType = row.type;
       this.collectionDialogTitle = 'New Child Collection';
       this.collectionDialogValue = '';
+      this.collectionDialogError = '';
+      this.collectionDialogBusy = false;
       this.collectionDialogVisible = true;
       return;
     }
@@ -951,12 +1010,7 @@ struct MainPage {
         let parentKey = this.collectionDialogTargetKey.length > 0 ? this.collectionDialogTargetKey : null;
         let newKey = await repo.createCollection(title, parentKey);
         await repo.close();
-        this.collectionDialogVisible = false;
-        this.collectionDialogMode = '';
-        this.collectionDialogTargetKey = '';
-        this.collectionDialogTargetType = '';
-        this.collectionDialogTitle = '';
-        this.collectionDialogValue = '';
+        this._closeCollectionDialog();
         this.revision++;
         this._refreshPendingSyncState();
         await this._selectCollectionByKey(newKey);
@@ -964,12 +1018,7 @@ struct MainPage {
       } else if (this.collectionDialogMode === 'new') {
         let newKey = await repo.createCollection(title, null);
         await repo.close();
-        this.collectionDialogVisible = false;
-        this.collectionDialogMode = '';
-        this.collectionDialogTargetKey = '';
-        this.collectionDialogTargetType = '';
-        this.collectionDialogTitle = '';
-        this.collectionDialogValue = '';
+        this._closeCollectionDialog();
         this.revision++;
         this._refreshPendingSyncState();
         await this._selectCollectionByKey(newKey);

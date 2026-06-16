@@ -62,7 +62,47 @@
    - [ ] Footer shows "All synced"
 3. Verify on Zotero Web Library that the edited item reflects changes
 
-## 6. Edge Cases
+## 6. P0 Workflow — New Item
+
+- [ ] Tap top **+**
+- [ ] Select **Book** type
+- [ ] Enter a title
+- [ ] Tap **Create**
+- [ ] While creating: button shows "Creating…", disabled
+- [ ] Cannot double-click to create duplicates
+- [ ] Dialog closes
+- [ ] New item appears in tree and is selected
+- [ ] Right pane shows title in details
+- [ ] Footer shows "1 changes pending"
+
+## 7. P0 Workflow — New Collection
+
+- [ ] Tap left LIBRARY **+**
+- [ ] Enter a name
+- [ ] Tap **Create**
+- [ ] While saving: button shows "Saving…", disabled
+- [ ] New collection appears in left tree and is selected
+- [ ] Middle item list is empty (or shows collection items)
+- [ ] Footer shows pending changes
+
+## 8. P0 Workflow — Add by Identifier
+
+- [ ] Tap **ID**
+- [ ] Enter `10.1234/test` (DOI), `978-3-16-148410-0` (ISBN) — one per line
+- [ ] Tap **Add**
+- [ ] While adding: button shows "Adding…", disabled
+- [ ] At least one item created and selected
+- [ ] DOI/ISBN field written correctly
+- [ ] Empty input or invalid text → "No valid identifiers found"
+
+## 9. Failure Behavior
+
+- [ ] New Item fails → dialog stays open, shows "Failed to create item"
+- [ ] Collection save fails → dialog stays open, shows "Failed to save collection"
+- [ ] Add Identifier fails → dialog stays open, shows "Failed to add identifier"
+- [ ] Error text is red, does not contain API key
+
+## 10. Edge Cases
 
 - [ ] App restart preserves login state (footer shows "All synced")
 - [ ] App works without login (local-only mode, footer shows "Not connected")
