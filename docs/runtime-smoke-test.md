@@ -2,118 +2,129 @@
 
 ## Prerequisites
 
-- DevEco Studio with HarmonyOS Emulator or device
-- HAP built and installed successfully
-- A valid Zotero API Key from https://www.zotero.org/settings/keys
+- DevEco Studio with HarmonyOS Emulator/device
+- HAP built and installed successfully (CompileArkTS: 0 errors)
+- Valid Zotero API Key from https://www.zotero.org/settings/keys
 
-## 1. Compilation & Launch
+---
 
-- [ ] `hvigorw assembleHap` succeeds (CompileArkTS: 0 errors)
+## A. App Launch
+
 - [ ] App launches without crash
-- [ ] MainPage renders with toolbar, collection tree, empty item list
+- [ ] MainPage renders: toolbar, collection tree (My Library), empty item list
+- [ ] Footer shows "Not connected" (first launch) or "All synced" (restart with saved key)
+- [ ] Theme toggle works (if supported)
 
-## 2. Login / Connect
+## B. Connect + Sync
 
-1. Tap **Connect** in the footer
-2. LoginPage appears
-3. Enter a valid Zotero API Key
-4. Tap **Connect**
-5. If key is valid → returns to MainPage
-   - [ ] Footer changes from "Not connected" to "All synced" or "Ready to sync"
-   - [ ] Green dot appears in footer
-   - [ ] Sync button is enabled
-6. If key is invalid → error message shown on LoginPage
-   - [ ] "Invalid API Key" message appears
+- [ ] Tap **Connect** in footer → LoginPage appears
+- [ ] Enter valid Zotero API Key → tap **Connect**
+- [ ] Returns to MainPage → footer changes to "All synced" or "Ready to sync"
+- [ ] Invalid key → error message shown on LoginPage
+- [ ] Tap **Sync**
+- [ ] Footer shows "Checking libraries" → "Downloading changes" → "Sync complete"
+- [ ] ItemTree reloads: Zotero library items appear
 
-## 3. First Sync
-
-1. Tap **Sync** in the footer
-2. Footer status changes:
-   - [ ] "Checking libraries" appears
-   - [ ] Then "Syncing library" / "Downloading changes"
-3. On success:
-   - [ ] Footer shows "Sync complete" or "All synced"
-   - [ ] ItemTree reloads and shows items from Zotero library
-   - [ ] Item titles / creators / dates are visible
-4. On failure:
-   - [ ] Error message shown in footer (e.g. "Invalid API key")
-   - [ ] App does not crash
-   - [ ] Previous items (if any) remain visible
-
-## 4. Edit & Pending State
-
-1. Select a regular item (not note/attachment)
-2. Change the **title** field
-3. Tap **Save**
-   - [ ] Orange ● dot appears next to item in ItemTree
-   - [ ] Footer shows "1 changes pending"
-   - [ ] ItemPane shows "Saved locally, pending sync"
-4. Select a note child item
-5. Edit the note title or body
-6. Tap **Save Note**
-   - [ ] Pending count increases
-
-## 5. Upload Sync
-
-1. Tap **Sync**
-2. On success:
-   - [ ] Footer shows "Sync complete"
-   - [ ] Pending dots disappear from ItemTree
-   - [ ] Footer shows "All synced"
-3. Verify on Zotero Web Library that the edited item reflects changes
-
-## 6. P0 Workflow — New Item
-
-- [ ] Tap top **+**
-- [ ] Select **Book** type
-- [ ] Enter a title
-- [ ] Tap **Create**
-- [ ] While creating: button shows "Creating…", disabled
-- [ ] Cannot double-click to create duplicates
-- [ ] Dialog closes
-- [ ] New item appears in tree and is selected
-- [ ] Right pane shows title in details
-- [ ] Footer shows "1 changes pending"
-
-## 7. P0 Workflow — New Collection
+## C. New Collection
 
 - [ ] Tap left LIBRARY **+**
-- [ ] Enter a name
-- [ ] Tap **Create**
-- [ ] While saving: button shows "Saving…", disabled
-- [ ] New collection appears in left tree and is selected
-- [ ] Middle item list is empty (or shows collection items)
-- [ ] Footer shows pending changes
+- [ ] Dialog appears: "New Collection", name input
+- [ ] Enter name, tap **Create**
+- [ ] Button shows "Saving…", disabled
+- [ ] Dialog closes, new collection appears in left tree, selected
+- [ ] Footer shows "Collection created" (green), pending changes count
+- [ ] Empty name → "Collection name is required" error
 
-## 8. P0 Workflow — Add by Identifier
+## D. New Item in Collection
 
-- [ ] Tap **ID**
+- [ ] Select a collection in left tree
+- [ ] Tap top **+**
+- [ ] Dialog appears: type selector + title input
+- [ ] Select **Book**, enter title, tap **Create**
+- [ ] Button shows "Creating…", disabled
+- [ ] Dialog closes, new item appears in center tree, selected
+- [ ] Right pane shows title in details
+- [ ] Footer shows "Item created" (green), pending changes
+
+## E. Edit Title + Save
+
+- [ ] Select a regular item in center tree
+- [ ] Right pane → Info tab → change title field
+- [ ] Tap **Save** (turns green "Saved locally, pending sync")
+- [ ] ItemTree shows orange ● pending dot next to item
+
+## F. Pending Dot + Upload
+
+- [ ] Footer shows "1 changes pending"
+- [ ] Tap **Sync**
+- [ ] Sync completes → pending dot disappears
+- [ ] Footer shows "All synced"
+
+## G. Add Note
+
+- [ ] Select a regular item
+- [ ] Tap toolbar **Note** or row menu **Add note**
+- [ ] Child note row appears under item (expand ▶ to see if collapsed)
+- [ ] Tap note child → note editor opens (title + body)
+
+## H. Add Attachment
+
+- [ ] Select a regular item
+- [ ] Tap row menu **Add attachment**
+- [ ] Child attachment row appears under item
+- [ ] Tap attachment child → attachment detail or reader opens
+
+## I. Delete Item
+
+- [ ] Select an item, tap **Delete** in right toolbar
+- [ ] Item disappears from current view
+- [ ] Switch to **Trash** view in left tree
+- [ ] Deleted item appears in trash
+- [ ] Footer shows "Moved to trash" (green)
+
+## J. Restore Item
+
+- [ ] In **Trash** view, select an item
+- [ ] Tap **Restore**
+- [ ] Item disappears from trash
+- [ ] Switch to My Library → item is back
+- [ ] Footer shows "Restored" (green)
+
+## K. Add by Identifier
+
+- [ ] Tap **ID** in toolbar
+- [ ] Dialog appears: textarea for identifiers
 - [ ] Enter `10.1234/test` (DOI), `978-3-16-148410-0` (ISBN) — one per line
 - [ ] Tap **Add**
-- [ ] While adding: button shows "Adding…", disabled
-- [ ] At least one item created and selected
-- [ ] DOI/ISBN field written correctly
-- [ ] Empty input or invalid text → "No valid identifiers found"
+- [ ] Button shows "Adding…", disabled
+- [ ] Items created and first one selected
+- [ ] DOI/ISBN fields written to respective items
+- [ ] Footer shows "N item(s) added" (green)
 
-## 9. Failure Behavior
+## L. Invalid Identifier
 
-- [ ] New Item fails → dialog stays open, shows "Failed to create item"
-- [ ] Collection save fails → dialog stays open, shows "Failed to save collection"
-- [ ] Add Identifier fails → dialog stays open, shows "Failed to add identifier"
-- [ ] Error text is red, does not contain API key
+- [ ] Tap **ID** → enter empty input or "just some text"
+- [ ] Tap **Add** → "No valid identifiers found" error
 
-## 10. Edge Cases
+## M. Failure Behavior
 
-- [ ] App restart preserves login state (footer shows "All synced")
-- [ ] App works without login (local-only mode, footer shows "Not connected")
-- [ ] Connection error during sync shows readable error message
-- [ ] Rapid double-tap Sync does not crash
-- [ ] Connect then immediately tap Sync — does NOT show "API key not set"
-- [ ] App cold start: tap Sync immediately — does NOT show "API key not set"
-- [ ] Footer shows "Initializing account…" during auth, Sync button disabled
+- [ ] New Item fails → dialog stays open, red "Failed to create item"
+- [ ] Collection save fails → dialog stays open, red "Failed to save collection"
+- [ ] Add Identifier fails → dialog stays open, red "Failed to add identifier"
+- [ ] Rapid double-click Create/Add does not create duplicates
+
+## N. App Restart Auth State
+
+- [ ] Close and reopen app
+- [ ] Footer shows "All synced" (not "Not connected")
+- [ ] Tap Sync immediately → does NOT show "API key not set"
+- [ ] Footer shows "Initializing account…" briefly, then proceeds
+
+---
 
 ## Notes
 
-- API Key is stored in `preferences` and **never** printed to logs
-- HAP is **not** committed to the repository
-- Warnings (getContext deprecated, pushUrl deprecated, etc.) are not addressed in this phase
+- API Key stored in preferences, never printed to logs
+- HAP not committed to repository
+- Warnings (getContext deprecated, etc.) not addressed in this phase
+- No localization implemented yet (English only)

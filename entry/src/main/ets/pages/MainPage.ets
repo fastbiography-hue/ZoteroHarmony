@@ -87,6 +87,7 @@ struct MainPage {
   @State identifierDialogBusy: boolean = false;
   // Collection dialog busy
   @State collectionDialogBusy: boolean = false;
+  @State workflowMessage: string = '';
   @StorageLink('zotero_theme') themeMode: string = 'light';
   @State pendingSyncMap: Record<string, boolean> = {};
   @State pendingSyncSummaryText: string = '';
@@ -513,6 +514,12 @@ struct MainPage {
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .margin({ left: 8 })
             }
+            if (this.workflowMessage.length > 0) {
+              Text(this.workflowMessage)
+                .fontSize(11).fontColor('#2E7D32').maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .margin({ left: 8 })
+            }
           }
           Blank()
           Button('Sync').fontSize(12).height(28)
@@ -791,6 +798,7 @@ struct MainPage {
       await repo.close();
       this._closeNewItemDialog();
       this.revision++;
+      this.workflowMessage = 'Item created';
       this._refreshPendingSyncState();
       await this._selectItemByKey(newKey);
     } catch (_err) {
@@ -848,6 +856,7 @@ struct MainPage {
       await repo.close();
       this._closeIdentifierDialog();
       this.revision++;
+      this.workflowMessage = `${createdKeys.length} item(s) added`;
       this._refreshPendingSyncState();
       if (createdKeys.length > 0) {
         await this._selectItemByKey(createdKeys[0]);
@@ -930,6 +939,8 @@ struct MainPage {
         this.selectedItemKey = '';
         this.selectedItemKeys = [];
         this.currentItem = new ItemModel();
+        if (commandID === ZoteroCommands.DELETE) { this.workflowMessage = 'Moved to trash'; }
+        else if (commandID === ZoteroCommands.RESTORE) { this.workflowMessage = 'Restored'; }
       }
       this._refreshPendingSyncState();
     }).catch((_err: Error) => {
@@ -1012,6 +1023,7 @@ struct MainPage {
         await repo.close();
         this._closeCollectionDialog();
         this.revision++;
+        this.workflowMessage = 'Collection created';
         this._refreshPendingSyncState();
         await this._selectCollectionByKey(newKey);
         return;
@@ -1020,6 +1032,7 @@ struct MainPage {
         await repo.close();
         this._closeCollectionDialog();
         this.revision++;
+        this.workflowMessage = 'Collection created';
         this._refreshPendingSyncState();
         await this._selectCollectionByKey(newKey);
         return;
