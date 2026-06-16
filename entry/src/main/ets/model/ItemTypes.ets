@@ -19,6 +19,7 @@ export interface ZoteroCreator {
   firstName: string;
   lastName: string;
   fieldMode: number;      // 0 = two-field (first/last), 1 = single-field
+  name?: string;          // single-field creator display name (fieldMode=1)
 }
 
 /**

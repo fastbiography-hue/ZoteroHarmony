@@ -33,14 +33,16 @@ interface FieldDraft {
 export struct ItemDetailsForm {
   @Prop item: ItemModel = new ItemModel();
   /** Triggers draft rebuild when switching to a different item. */
-  @Prop itemKey: string = '';
   @Watch('_onItemSwitch')
+  @Prop itemKey: string = '';
+  /** Triggers refresh when the item is updated externally (e.g. after save). */
   @Prop itemRevision: number = 0;
   @State itemType: string = 'journalArticle';
   @State draftFields: Map<string, FieldDraft> = new Map();
   @State creators: ZoteroCreator[] = [];
   @State initialCreatorsJson: string = '';
   @State tags: ZoteroTag[] = [];
+  @State initialTagsJson: string = '';
   @State readOnly: boolean = false;
   @State isSaving: boolean = false;
   @State saveStatus: 'idle' | 'dirty' | 'success' | 'error' = 'idle';
@@ -63,6 +65,7 @@ export struct ItemDetailsForm {
     this.creators = [...this.item.creators];
     this.initialCreatorsJson = creatorsToJson(this.creators);
     this.tags = [...this.item.tags];
+    this.initialTagsJson = tagsToJson(this.tags);
     let fresh = new Map<string, FieldDraft>();
     this.item.itemData.forEach((value: string, key: string) => {
       if (key === 'itemType' || key === 'creator' || key === 'note') { return; }
@@ -149,7 +152,11 @@ export struct ItemDetailsForm {
             readOnly: this.readOnly,
             onCreatorsChange: (creators: ZoteroCreator[]) => {
               this.creators = creators;
-              this.isDirty = this.isDirty || !creatorsJsonEqual(this.initialCreatorsJson, creators);
+              if (!creatorsJsonEqual(this.initialCreatorsJson, creators)) {
+                this._markDirty();
+              } else {
+                this._updateDirtyFlag();
+              }
             },
           })
 
@@ -180,7 +187,11 @@ export struct ItemDetailsForm {
             readOnly: this.readOnly,
             onTagsChange: (tags: ZoteroTag[]) => {
               this.tags = tags;
-              this._markDirty();
+              if (!tagsJsonEqual(this.initialTagsJson, tags)) {
+                this._markDirty();
+              } else {
+                this._updateDirtyFlag();
+              }
             },
           })
 
@@ -278,8 +289,10 @@ export struct ItemDetailsForm {
       if (!creatorsJsonEqual(this.initialCreatorsJson, this.creators)) {
         await repo.updateItemCreatorsByKey(itemKey, this.creators);
       }
-      // 4. Tags
-      await repo.replaceItemTags(itemKey, this.tags);
+      // 4. Tags (only if changed)
+      if (!tagsJsonEqual(this.initialTagsJson, this.tags)) {
+        await repo.replaceItemTags(itemKey, this.tags);
+      }
       await repo.close();
 
       // Update ItemModel + draft in place
@@ -291,8 +304,10 @@ export struct ItemDetailsForm {
       }
       this.item.itemData.set('itemType', this.itemType);
       this.item.itemTypeName = this.itemType;
-      this.item.tags = this.tags;
+      this.item.creators = [...this.creators];
+      this.item.tags = [...this.tags];
       this.initialCreatorsJson = creatorsToJson(this.creators);
+      this.initialTagsJson = tagsToJson(this.tags);
       this.isDirty = false;
       this.saveStatus = 'success';
       this.saveMessage = 'Saved locally, pending sync';
@@ -314,16 +329,32 @@ export struct ItemDetailsForm {
 export function creatorsToJson(creators: ZoteroCreator[]): string {
   let arr: Record<string, string>[] = [];
   for (let i = 0; i < creators.length; i++) {
-    arr.push({
+    let entry: Record<string, string> = {
       ct: creators[i].creatorType,
       fn: creators[i].firstName,
       ln: creators[i].lastName,
       fm: `${creators[i].fieldMode}`,
-    });
+    };
+    if ((creators[i].name ?? '').length > 0) {
+      entry['nm'] = creators[i].name!;
+    }
+    arr.push(entry);
   }
   return JSON.stringify(arr);
 }
 
 export function creatorsJsonEqual(jsonA: string, creatorsB: ZoteroCreator[]): boolean {
   return jsonA === creatorsToJson(creatorsB);
+}
+
+export function tagsToJson(tags: ZoteroTag[]): string {
+  let arr: Record<string, string>[] = [];
+  for (let i = 0; i < tags.length; i++) {
+    arr.push({ tg: tags[i].tag, tp: `${tags[i].type}` });
+  }
+  return JSON.stringify(arr);
+}
+
+export function tagsJsonEqual(jsonA: string, tagsB: ZoteroTag[]): boolean {
+  return jsonA === tagsToJson(tagsB);
 }
