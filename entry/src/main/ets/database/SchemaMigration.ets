@@ -229,11 +229,19 @@ export const CORE_TABLES: string[] = [
  * Also handles schema migration from older versions.
  */
 export async function migrate(db: ZoteroDb): Promise<void> {
-  // Detect current schema version
+  // Phase 1: always run idempotent DDL first.
+  // This ensures all tables exist before any migration patch touches them.
+  for (let i = 0; i < CORE_TABLES.length; i++) {
+    await db.executeSql(CORE_TABLES[i]);
+  }
+
+  // Phase 2: detect version and apply schema patches.
   let currentVersion = await detectSchemaVersion(db);
 
-  // v1 → v2: add creatorTypes table + itemCreators.creatorTypeID column
   if (currentVersion < 2) {
+    // v1 → v2: add creatorTypes table + itemCreators.creatorTypeID column.
+    // By now CORE_TABLES has already created itemCreators (fresh/v2) or
+    // left the existing table untouched (v1), so columnExists is safe.
     await db.executeSql(
       `CREATE TABLE IF NOT EXISTS creatorTypes (
         creatorTypeID INTEGER PRIMARY KEY,
@@ -247,11 +255,10 @@ export async function migrate(db: ZoteroDb): Promise<void> {
     }
   }
 
-  // Always run idempotent DDL
-  for (let i = 0; i < CORE_TABLES.length; i++) {
-    await db.executeSql(CORE_TABLES[i]);
-  }
+  // Phase 3: seed metadata (idempotent INSERT OR IGNORE).
   await seedCoreMetadata(db);
+
+  // Phase 4: record schema version.
   await db.executeSql(
     `INSERT OR REPLACE INTO version (schema, version) VALUES ('zotero', ${SCHEMA_VERSION})`
   );
