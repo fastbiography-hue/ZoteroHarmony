@@ -1168,25 +1168,21 @@ export class LibraryRepository {
   }
 
   async upsertRemoteObject(objectType: RemoteObjectType, object: Record<string, Object>, libraryID: number = 1): Promise<void> {
-    let key = this.remoteString(object, 'key', '');
-    let version = this.remoteNumber(object, 'version', 0);
     let data = this.remoteData(object);
-    if (key.length === 0) {
-      key = this.remoteString(data, 'key', '');
-    }
-    if (version === 0) {
-      version = this.remoteNumber(data, 'version', 0);
-    }
+    let key = this.remoteString(object, 'key', this.remoteString(data, 'key', ''));
+    let version = this.remoteNumber(object, 'version', this.remoteNumber(data, 'version', 0));
     if (key.length === 0) {
       return;
     }
-    if (objectType === 'collection') {
-      await this.upsertRemoteCollection(key, version, data, libraryID);
-    } else if (objectType === 'search') {
-      await this.upsertRemoteSearch(key, version, data, libraryID);
-    } else {
-      await this.upsertRemoteItem(key, version, data, libraryID);
-    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      if (objectType === 'collection') {
+        await this.upsertRemoteCollection(key, version, data, libraryID);
+      } else if (objectType === 'search') {
+        await this.upsertRemoteSearch(key, version, data, libraryID);
+      } else {
+        await this.upsertRemoteItem(key, version, data, libraryID);
+      }
+    });
   }
 
   async applyRemoteDeletions(objectType: RemoteObjectType, keys: string[], libraryID: number = 1): Promise<void> {
@@ -1281,25 +1277,84 @@ export class LibraryRepository {
        )`,
       [libraryID, key, name, libraryID, key, version]
     );
+    let savedSearchID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT savedSearchID FROM savedSearches WHERE libraryID = ? AND key = ?`,
+      [libraryID, key]
+    ));
+    if (savedSearchID === 0) {
+      return;
+    }
+    // Clean old conditions, then re-insert
+    await this.db.executeSql(
+      `DELETE FROM savedSearchConditions WHERE savedSearchID = ?`, [savedSearchID]
+    );
+    let conditions = data['conditions'] as Record<string, Object>[] | undefined;
+    if (!conditions) {
+      return;
+    }
+    for (let i = 0; i < conditions.length; i++) {
+      let cond = conditions[i];
+      let condition = this.remoteString(cond, 'condition', '');
+      let operator = this.remoteString(cond, 'operator', '');
+      let value = this.remoteString(cond, 'value', '');
+      let required = this.remoteNumber(cond, 'required', 0);
+      if (condition.length === 0) {
+        continue;
+      }
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO savedSearchConditions
+         (savedSearchID, searchConditionID, condition, operator, value, required)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [savedSearchID, i + 1, condition, operator, value, required]
+      );
+    }
   }
 
   private async upsertRemoteItem(key: string, version: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    // Parse with ItemModel.fromJSON for consistent field extraction
+    let item = new ItemModel();
+    item.fromJSON(data);
+
     let itemType = this.remoteString(data, 'itemType', 'journalArticle');
     let typeID = this.toNumber(await this.db.valueQueryAsync(
       `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [itemType]
     ));
-    await this.db.executeSql(
-      `INSERT OR REPLACE INTO items
-       (itemID, itemTypeID, libraryID, key, version, synced)
-       VALUES (
-         COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
-         ?, ?, ?, ?, 1
-       )`,
-      [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version]
-    );
+    let dateAdded = this.remoteString(data, 'dateAdded', '');
+    let dateModified = this.remoteString(data, 'dateModified', '');
+
+    // Upsert items row (preserve existing dateAdded on update)
+    if (dateAdded.length === 0) {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO items
+         (itemID, itemTypeID, libraryID, key, version, synced, dateModified)
+         VALUES (
+           COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
+           ?, ?, ?, ?, 1, ?
+         )`,
+        [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version,
+         dateModified.length > 0 ? dateModified : 'datetime(\'now\')']
+      );
+    } else {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO items
+         (itemID, itemTypeID, libraryID, key, version, synced, dateAdded, dateModified)
+         VALUES (
+           COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
+           ?, ?, ?, ?, 1, ?, ?
+         )`,
+        [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version,
+         dateAdded, dateModified]
+      );
+    }
+
     let itemID = this.toNumber(await this.db.valueQueryAsync(
       `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, key]
     ));
+    if (itemID === 0) {
+      return;
+    }
+
+    // itemData: only scalar Zotero item fields
     await this.putItemField(itemID, 'itemType', itemType);
     let fieldKeys = Object.keys(data);
     for (let i = 0; i < fieldKeys.length; i++) {
@@ -1308,10 +1363,27 @@ export class LibraryRepository {
         await this.putItemField(itemID, fieldName, this.remoteValueToString(data[fieldName]));
       }
     }
+
+    // Creators
+    await this.upsertRemoteItemCreators(itemID, data, libraryID);
+
+    // Tags
+    await this.upsertRemoteItemTags(itemID, data, libraryID);
+
+    // Collections
     await this.upsertRemoteItemCollections(itemID, data, libraryID);
-    await this.upsertRemoteItemTags(itemID, data);
+
+    // Relations
     await this.upsertRemoteItemRelations(itemID, data, libraryID);
-    await this.upsertRemoteAttachment(itemID, data);
+
+    // Subtype tables
+    if (itemType === 'note' || item.isNote()) {
+      await this.upsertRemoteNote(itemID, data, libraryID);
+    } else if (itemType === 'annotation' || item.isAnnotation()) {
+      await this.upsertRemoteAnnotation(itemID, data, libraryID);
+    } else if (itemType === 'attachment' || item.isAttachment()) {
+      await this.upsertRemoteAttachment(itemID, data, libraryID);
+    }
   }
 
   private async upsertRemoteItemCollections(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
@@ -1346,6 +1418,54 @@ export class LibraryRepository {
       await this.db.executeSql(
         `INSERT OR REPLACE INTO itemTags (itemID, tagID, type) VALUES (?, ?, ?)`,
         [itemID, tagID, type]
+      );
+    }
+  }
+
+  private async upsertRemoteItemCreators(itemID: number, data: Record<string, Object>, _libraryID: number): Promise<void> {
+    let creatorObjects = data['creators'] as Record<string, Object>[] | undefined;
+    // Clean old creators
+    await this.db.executeSql(`DELETE FROM itemCreators WHERE itemID = ?`, [itemID]);
+    if (!creatorObjects || creatorObjects.length === 0) {
+      return;
+    }
+    for (let i = 0; i < creatorObjects.length; i++) {
+      let c = creatorObjects[i];
+      let creatorType = this.remoteString(c, 'creatorType', 'author');
+      let firstName = this.remoteString(c, 'firstName', '');
+      let lastName = this.remoteString(c, 'lastName', '');
+      let name = this.remoteString(c, 'name', '');
+      let fieldMode = 0;
+      if (name.length > 0 && lastName.length === 0) {
+        lastName = name;
+        fieldMode = 1;
+      }
+      if (lastName.length === 0 && firstName.length === 0 && name.length === 0) {
+        continue;
+      }
+      // Upsert creator
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO creators (firstName, lastName, fieldMode) VALUES (?, ?, ?)`,
+        [firstName, lastName, fieldMode]
+      );
+      let creatorID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT creatorID FROM creators WHERE lastName = ? AND firstName = ? AND fieldMode = ?`,
+        [lastName, firstName, fieldMode]
+      ));
+      if (creatorID === 0) {
+        continue;
+      }
+      // Resolve creatorTypeID
+      let creatorTypeID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT creatorTypeID FROM creatorTypes WHERE creatorType = ?`, [creatorType]
+      ));
+      if (creatorTypeID === 0) {
+        creatorTypeID = 1; // fallback to 'author'
+      }
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemCreators (itemID, creatorID, creatorTypeID, orderIndex)
+         VALUES (?, ?, ?, ?)`,
+        [itemID, creatorID, creatorTypeID, i]
       );
     }
   }
@@ -1404,39 +1524,130 @@ export class LibraryRepository {
     return relatedKeys;
   }
 
-  private async upsertRemoteAttachment(itemID: number, data: Record<string, Object>): Promise<void> {
-    let linkMode = this.remoteString(data, 'linkMode', '');
-    if (linkMode.length === 0) { return; }
-    let mode = linkMode === 'linked_url' ? 3 : (linkMode === 'linked_file' ? 2 : 0);
+  private async upsertRemoteNote(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let note = this.remoteString(data, 'note', '');
+    let title = this.remoteString(data, 'title', '');
+    // displayTitle: explicit title or first 80 chars of stripped note
+    if (title.length === 0 && note.length > 0) {
+      let plain = note.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      title = plain.length > 80 ? plain.substring(0, 80) : plain;
+    }
     let parentKey = this.remoteString(data, 'parentItem', '');
     let parentID = parentKey.length > 0 ? this.toNumber(await this.db.valueQueryAsync(
-      `SELECT itemID FROM items WHERE key = ?`, [parentKey]
+      `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, parentKey]
     )) : 0;
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO itemNotes (itemID, parentItemID, note, title)
+       VALUES (?, ?, ?, ?)`,
+      [itemID, parentID > 0 ? parentID : null, note, title]
+    );
+  }
+
+  private async upsertRemoteAnnotation(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let annotationID = this.remoteString(data, 'key', '');
+    if (annotationID.length === 0) {
+      return;
+    }
+    let atype = this.remoteString(data, 'annotationType', 'highlight');
+    let pageLabel = this.remoteString(data, 'annotationPageLabel', '0');
+    let pageIndex = Number.parseInt(pageLabel, 10);
+    if (pageIndex !== pageIndex) { pageIndex = 0; }
+    let positionStr = this.remoteString(data, 'annotationPosition', '{}');
+    let pos = this.parseAnnotationPosition(positionStr);
+    let color = this.remoteString(data, 'annotationColor', '#FFD700');
+    let text = this.remoteString(data, 'annotationText', '');
+    let comment = this.remoteString(data, 'annotationComment', '');
+    let authorName = this.remoteString(data, 'annotationAuthorName', '');
+    let sortIndex = this.remoteString(data, 'annotationSortIndex', '');
+    let dateModified = this.remoteString(data, 'dateModified', '');
+
+    let parentKey = this.remoteString(data, 'parentItem', '');
+    let parentID = parentKey.length > 0 ? this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, parentKey]
+    )) : 0;
+    if (parentID === 0) {
+      return; // annotation without parent is invalid
+    }
+
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO itemAnnotations
+       (annotationID, parentItemID, type, pageIndex, x, y, width, height,
+        color, text, comment, authorName, sortIndex, dateModified, synced)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [
+        annotationID, parentID, atype, pageIndex,
+        pos.x, pos.y, pos.width, pos.height,
+        color, text, comment, authorName, sortIndex,
+        dateModified.length > 0 ? dateModified : '',
+      ]
+    );
+  }
+
+  /** Parse Zotero annotationPosition JSON string → {x,y,width,height}. */
+  private parseAnnotationPosition(pos: string): { x: number; y: number; width: number; height: number } {
+    let result = { x: 0, y: 0, width: 0, height: 0 };
+    if (pos.length === 0) { return result; }
+    try {
+      // Simple JSON parsing without eval — extract numbers via regex
+      let xm = pos.match(/"x"\s*:\s*(-?\d+\.?\d*)/);
+      let ym = pos.match(/"y"\s*:\s*(-?\d+\.?\d*)/);
+      let wm = pos.match(/"width"\s*:\s*(-?\d+\.?\d*)/);
+      let hm = pos.match(/"height"\s*:\s*(-?\d+\.?\d*)/);
+      if (xm !== null) { result.x = Number.parseFloat(xm[1]); }
+      if (ym !== null) { result.y = Number.parseFloat(ym[1]); }
+      if (wm !== null) { result.width = Number.parseFloat(wm[1]); }
+      if (hm !== null) { result.height = Number.parseFloat(hm[1]); }
+    } catch (_e) { /* keep defaults */ }
+    return result;
+  }
+
+  private async upsertRemoteAttachment(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let linkMode = this.remoteString(data, 'linkMode', '');
+    if (linkMode.length === 0) { return; }
+    // Map all 5 Zotero link modes
+    let lower = linkMode.toLowerCase();
+    let mode: number;
+    if (lower === 'imported_file')  { mode = 0; }
+    else if (lower === 'imported_url')   { mode = 1; }
+    else if (lower === 'linked_file')    { mode = 2; }
+    else if (lower === 'linked_url')     { mode = 3; }
+    else if (lower === 'embedded_image') { mode = 4; }
+    else { mode = 0; }
+
+    let parentKey = this.remoteString(data, 'parentItem', '');
+    let parentID = parentKey.length > 0 ? this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, parentKey]
+    )) : 0;
+    let contentType = this.remoteString(data, 'contentType', '');
+    let charset = this.remoteString(data, 'charset', '');
+    let path = this.remoteString(data, 'path', this.remoteString(data, 'url', ''));
+    let filename = this.remoteString(data, 'filename', '');
+    let md5 = this.remoteString(data, 'md5', '');
+    let mtime = this.remoteNumber(data, 'mtime', 0);
+
     if (parentID > 0) {
       await this.db.executeSql(
         `INSERT OR REPLACE INTO itemAttachments
-         (itemID, parentItemID, linkMode, contentType, path, syncState)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-        [
-          itemID,
-          parentID,
-          mode,
-          this.remoteString(data, 'contentType', ''),
-          this.remoteString(data, 'path', this.remoteString(data, 'url', '')),
-        ]
+         (itemID, parentItemID, linkMode, contentType, path, syncState, storageHash, storageModTime)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+        [itemID, parentID, mode, contentType, path, md5.length > 0 ? md5 : null, mtime > 0 ? mtime : null]
       );
     } else {
       await this.db.executeSql(
         `INSERT OR REPLACE INTO itemAttachments
-         (itemID, parentItemID, linkMode, contentType, path, syncState)
-         VALUES (?, NULL, ?, ?, ?, 0)`,
-        [
-          itemID,
-          mode,
-          this.remoteString(data, 'contentType', ''),
-          this.remoteString(data, 'path', this.remoteString(data, 'url', '')),
-        ]
+         (itemID, parentItemID, linkMode, contentType, path, syncState, storageHash, storageModTime)
+         VALUES (?, NULL, ?, ?, ?, 0, ?, ?)`,
+        [itemID, mode, contentType, path, md5.length > 0 ? md5 : null, mtime > 0 ? mtime : null]
       );
+    }
+
+    // Also store filename as itemData title if present
+    if (filename.length > 0) {
+      await this.putItemField(itemID, 'filename', filename);
+      let existingTitle = this.remoteString(data, 'title', '');
+      if (existingTitle.length === 0) {
+        await this.putItemField(itemID, 'title', filename);
+      }
     }
   }
 
@@ -1615,8 +1826,20 @@ export class LibraryRepository {
   }
 
   private isScalarItemField(fieldName: string, value: Object): boolean {
-    if (fieldName === 'key' || fieldName === 'version' || fieldName === 'collections' ||
-      fieldName === 'creators' || fieldName === 'tags' || fieldName === 'relations') {
+    if (fieldName === 'key' || fieldName === 'version' || fieldName === 'itemType' ||
+      fieldName === 'collections' || fieldName === 'creators' || fieldName === 'tags' ||
+      fieldName === 'relations' || fieldName === 'parentItem' ||
+      fieldName === 'linkMode' || fieldName === 'contentType' || fieldName === 'charset' ||
+      fieldName === 'md5' || fieldName === 'syncedHash' ||
+      fieldName === 'mtime' || fieldName === 'syncedModificationTime' ||
+      fieldName === 'filename' || fieldName === 'path' ||
+      fieldName === 'note' || fieldName === 'title' ||
+      fieldName === 'annotationType' || fieldName === 'annotationText' ||
+      fieldName === 'annotationComment' || fieldName === 'annotationColor' ||
+      fieldName === 'annotationPageLabel' || fieldName === 'annotationSortIndex' ||
+      fieldName === 'annotationPosition' || fieldName === 'annotationAuthorName' ||
+      fieldName === 'dateAdded' || fieldName === 'dateModified' ||
+      fieldName === 'synced' || fieldName === 'deleted') {
       return false;
     }
     return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';

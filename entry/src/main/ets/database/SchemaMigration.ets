@@ -102,6 +102,11 @@ export const CORE_TABLES: string[] = [
     tagID INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
   )`,
+  // Creator type enumeration (maps string→ID for itemCreators.creatorTypeID)
+  `CREATE TABLE IF NOT EXISTS creatorTypes (
+    creatorTypeID INTEGER PRIMARY KEY,
+    creatorType TEXT NOT NULL UNIQUE
+  )`,
   // Ref: schema.js:2973
   `CREATE TABLE IF NOT EXISTS itemTags (
     itemID INT NOT NULL,
@@ -246,6 +251,21 @@ async function seedCoreMetadata(db: ZoteroDb): Promise<void> {
     await db.executeSql(
       `INSERT OR IGNORE INTO itemTypes (itemTypeID, typeName) VALUES (?, ?)`,
       [i + 1, itemTypes[i]]
+    );
+  }
+
+  let creatorTypes: string[] = [
+    'author', 'contributor', 'editor', 'translator', 'seriesEditor',
+    'interviewee', 'interviewer', 'director', 'scriptwriter', 'producer',
+    'castMember', 'sponsor', 'counsel', 'inventor', 'attorneyAgent',
+    'recipient', 'performer', 'composer', 'wordsBy', 'cartographer',
+    'programmer', 'artist', 'podcaster', 'guest', 'presenter',
+    'reviewedAuthor',
+  ];
+  for (let k = 0; k < creatorTypes.length; k++) {
+    await db.executeSql(
+      `INSERT OR IGNORE INTO creatorTypes (creatorTypeID, creatorType) VALUES (?, ?)`,
+      [k + 1, creatorTypes[k]]
     );
   }
 
