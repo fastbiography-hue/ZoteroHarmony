@@ -22,6 +22,7 @@ import { QuickSearchBar } from '../ui/QuickSearchBar.ets';
 import { ZHColor, ZHMetric } from '../theme/ThemeConstants.ets';
 import { zoteroCommandRegistry } from '../commands/ZoteroCommandRegistry.ets';
 import { ZoteroCommandContext, ZoteroCommands } from '../commands/ZoteroCommands.ets';
+import { preferences } from '@kit.ArkData';
 import { LibraryRepository, PendingSyncSummary } from '../database/LibraryRepository.ets';
 
 /** Tab/page index for phone mode navigation. */
@@ -62,18 +63,55 @@ struct MainPage {
   @State pendingSyncMap: Record<string, boolean> = {};
   @State pendingSyncSummaryText: string = '';
   @State pendingSyncRevision: number = 0;
+  @State syncErrorMessage: string = '';
   private syncRunner: SyncRunner | null = null;
 
   aboutToAppear(): void {
-    let apiKey = AppStore.currentApiKey;
-    this.loggedIn = !!apiKey;
-    this.syncStatus = AppStore.syncStatus;
     this.themeMode = AppStore.theme;
-    if (apiKey) {
-      this.syncRunner = new SyncRunner('https://api.zotero.org', getContext(this).getApplicationContext());
-      this.syncRunner.loginWithApiKey(apiKey);
-    }
+    this._loadAuthState();
     this._refreshPendingSyncState();
+  }
+
+  /**
+   * Called when page becomes visible (e.g. returning from LoginPage).
+   * Re-reads auth state so the footer updates immediately.
+   */
+  onPageShow(): void {
+    this._loadAuthState();
+  }
+
+  /**
+   * Restore login state: AppStore first, then preferences fallback.
+   */
+  private _loadAuthState(): void {
+    let apiKey = AppStore.currentApiKey;
+    if (!apiKey) {
+      // Try preferences fallback (app restart scenario)
+      let ctx = getContext(this).getApplicationContext();
+      preferences.getPreferences(ctx, 'zotero_preferences').then((prefs) => {
+        let savedKey = prefs.getSync('apiKey', '') as string;
+        let savedUserID = prefs.getSync('userId', '') as string;
+        if (savedKey.length > 0) {
+          AppStore.currentApiKey = savedKey;
+          AppStore.currentUserID = savedUserID;
+          this._initSyncRunner(savedKey);
+        }
+      }).catch((_err: Error) => {});
+      this.loggedIn = false;
+      return;
+    }
+    this.loggedIn = true;
+    this._initSyncRunner(apiKey);
+  }
+
+  private _initSyncRunner(apiKey: string): void {
+    this.loggedIn = true;
+    if (!this.syncRunner) {
+      this.syncRunner = new SyncRunner('https://api.zotero.org',
+        getContext(this).getApplicationContext());
+    }
+    this.syncRunner.loginWithApiKey(apiKey);
+    this.syncStatus = 'idle';
   }
 
   build() {
@@ -408,6 +446,13 @@ struct MainPage {
                     (this.syncStatus === 'success' ? 'Sync complete' :
                       (this.syncStatus === 'offline' ? 'Offline' : 'Sync error')))))))
             .fontSize(12).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).flexShrink(1)
+          if (this.syncErrorMessage.length > 0) {
+            Text(this.syncErrorMessage)
+              .fontSize(11).fontColor('#C62828').maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .margin({ left: 8 })
+          }
           Blank()
           Button('Sync').fontSize(12).height(28)
             .enabled(this.syncStatus !== 'syncing' && this.syncStatus !== 'checking')
@@ -481,20 +526,41 @@ struct MainPage {
   }
 
   private _doSync(): void {
+    if (!this.loggedIn) {
+      this.syncStatus = 'error';
+      this.syncErrorMessage = 'Not connected — please connect your Zotero account';
+      AppStore.syncStatus = 'error';
+      return;
+    }
+    if (!this.syncRunner) {
+      let apiKey = AppStore.currentApiKey;
+      if (!apiKey) {
+        this.syncStatus = 'error';
+        this.syncErrorMessage = 'Not connected — API Key not found';
+        return;
+      }
+      this._initSyncRunner(apiKey);
+    }
     if (this.syncRunner) {
       this.syncStatus = 'checking';
+      this.syncErrorMessage = '';
       AppStore.syncStatus = 'checking';
       this.syncRunner.sync(false).then((ok: boolean) => {
         this.syncStatus = ok ? 'success' : 'error';
         AppStore.syncStatus = this.syncStatus;
         if (!ok && this.syncRunner) {
+          let errors = this.syncRunner.syncStatus.errors;
+          let msg = this.syncRunner.syncStatus.message;
+          this.syncErrorMessage = errors.length > 0 ? errors[0] : (msg.length > 0 ? msg : 'Sync failed');
           AppStore.lastSyncTime = this.syncRunner.syncStatus.lastSyncTimestamp;
         }
-        this._refreshPendingSyncState();
         this.revision++;
-      }).catch((_err: Error) => {
+        this._refreshPendingSyncState();
+      }).catch((err: Error) => {
         this.syncStatus = 'error';
+        this.syncErrorMessage = err.message || 'Sync failed';
         AppStore.syncStatus = 'error';
+        this.revision++;
         this._refreshPendingSyncState();
       });
     }
