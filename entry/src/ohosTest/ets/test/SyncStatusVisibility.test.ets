@@ -5,9 +5,8 @@
 
 import { describe, it, expect } from '@ohos/hypium';
 import { LibraryRepository, PendingSyncSummary } from '../../main/ets/database/LibraryRepository.ets';
-import {
-  ItemTreeRowModel, applyPendingSyncToRows,
-} from '../../main/ets/ui/tree/ItemTree.ets';
+import { ItemTreeRowModel } from '../../main/ets/ui/tree/ItemTree.ets';
+import { applyPendingSyncToRows } from '../../main/ets/ui/helpers/ItemTreeRowHelpers.ets';
 
 async function tryOpenRepo(): Promise<LibraryRepository | null> {
   try {

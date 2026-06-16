@@ -5,7 +5,10 @@
 
 import { describe, it, expect } from '@ohos/hypium';
 import { LibraryRepository } from '../../main/ets/database/LibraryRepository.ets';
-import { ItemPaneView } from '../../main/ets/ui/ItemPaneView.ets';
+import {
+  attachmentDraftDirty,
+  AttachmentDraftSnapshot,
+} from '../../main/ets/ui/helpers/AttachmentDraftHelpers.ets';
 
 async function tryOpenRepo(): Promise<LibraryRepository | null> {
   try {
@@ -33,19 +36,19 @@ export default function ChildItemEditTest(): void {
     it('same values → dirty=false', (): void => {
       let init = { title: 'A', contentType: 'pdf', path: '/a.pdf', url: 'https://a' };
       let current = { title: 'A', contentType: 'pdf', path: '/a.pdf', url: 'https://a' };
-      expect(!ItemPaneView.attachmentDraftDirty(init, current)).assertTrue();
+      expect(!attachmentDraftDirty(init, current)).assertTrue();
     });
 
     it('changed title → dirty=true', (): void => {
       let init = { title: 'A', contentType: 'pdf', path: '/a.pdf', url: 'https://a' };
       let current = { title: 'B', contentType: 'pdf', path: '/a.pdf', url: 'https://a' };
-      expect(ItemPaneView.attachmentDraftDirty(init, current)).assertTrue();
+      expect(attachmentDraftDirty(init, current)).assertTrue();
     });
 
     it('revert to original → dirty=false', (): void => {
       let init = { title: 'X', contentType: 'pdf', path: '/x', url: '' };
       let current = { title: 'X', contentType: 'pdf', path: '/x', url: '' };
-      expect(!ItemPaneView.attachmentDraftDirty(init, current)).assertTrue();
+      expect(!attachmentDraftDirty(init, current)).assertTrue();
     });
 
   });

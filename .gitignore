@@ -7,8 +7,17 @@ oh_modules/
 .preview/
 *.p12
 *.p7b
+*.cer
+*.keystore
+*.jks
+*.hap
+*.app
+*.hsp
 .idea/
 *.iml
 .DS_Store
 local.properties
 Thumbs.db
+# Build outputs (not committed)
+build/
+hvigor/cache/

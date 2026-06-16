@@ -10,7 +10,7 @@ import { ZoteroCreator, ZoteroTag } from '../../main/ets/model/ItemTypes.ets';
 import {
   creatorsToJson, creatorsJsonEqual,
   tagsToJson, tagsJsonEqual,
-} from '../../main/ets/ui/ItemDetailsForm.ets';
+} from '../../main/ets/ui/helpers/ItemDetailsHelpers.ets';
 
 async function tryOpenRepo(): Promise<LibraryRepository | null> {
   try {

@@ -19,6 +19,7 @@ import { NotesList, NoteEntry } from './NotesList.ets';
 import { RelatedItems, RelatedItemRef } from './RelatedItems.ets';
 import { TagChipEditor } from './TagChipEditor.ets';
 import { ZoteroTag, AttachmentLinkMode } from '../model/ItemTypes.ets';
+import { attachmentDraftDirty, AttachmentDraftSnapshot } from './helpers/AttachmentDraftHelpers.ets';
 import { ZHColor, ZHMetric } from '../theme/ThemeConstants.ets';
 import { readerManager } from '../reader/ReaderManager.ets';
 import { LibraryRepository } from '../database/LibraryRepository.ets';
@@ -135,11 +136,15 @@ export struct ItemPaneView {
   }
 
   private _updateAttachmentDirty(): void {
-    let dirty =
-      this.attachTitle !== this.initialAttachTitle ||
-      this.attachContentType !== this.initialAttachContentType ||
-      this.attachPath !== this.initialAttachPath ||
-      this.attachUrl !== this.initialAttachUrl;
+    let initial: AttachmentDraftSnapshot = {
+      title: this.initialAttachTitle, contentType: this.initialAttachContentType,
+      path: this.initialAttachPath, url: this.initialAttachUrl,
+    };
+    let current: AttachmentDraftSnapshot = {
+      title: this.attachTitle, contentType: this.attachContentType,
+      path: this.attachPath, url: this.attachUrl,
+    };
+    let dirty = attachmentDraftDirty(initial, current);
     this.attachIsDirty = dirty;
     if (dirty && this.attachSaveStatus === 'idle') {
       this.attachSaveStatus = 'dirty';
@@ -148,16 +153,7 @@ export struct ItemPaneView {
     }
   }
 
-  /** Pure helper for testability — exported. */
-  static attachmentDraftDirty(
-    initial: { title: string; contentType: string; path: string; url: string },
-    current: { title: string; contentType: string; path: string; url: string }
-  ): boolean {
-    return initial.title !== current.title ||
-      initial.contentType !== current.contentType ||
-      initial.path !== current.path ||
-      initial.url !== current.url;
-  }
+  // attachmentDraftDirty is now imported from AttachmentDraftHelpers.ets
 
   private reloadContent(): void {
     this._reload();

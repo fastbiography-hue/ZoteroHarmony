@@ -6,11 +6,11 @@
 
 import { describe, it, expect } from '@ohos/hypium';
 import { ItemModel } from '../../main/ets/model/ItemModel.ets';
+import { ItemTreeRowModel } from '../../main/ets/ui/tree/ItemTree.ets';
 import {
-  ItemTreeRowModel,
   buildItemTreeRows,
   collectParentKeysForChildLookup,
-} from '../../main/ets/ui/tree/ItemTree.ets';
+} from '../../main/ets/ui/helpers/ItemTreeRowHelpers.ets';
 import { LibraryRepository, ItemChildSummary } from '../../main/ets/database/LibraryRepository.ets';
 
 async function tryOpenRepo(): Promise<LibraryRepository | null> {
