@@ -69,6 +69,7 @@ struct CreatorRow {
 export struct CreatorEditor {
   @Link creators: ZoteroCreator[];
   @Prop readOnly: boolean = false;
+  onCreatorsChange?: (creators: ZoteroCreator[]) => void;
 
   build() {
     Column() {
@@ -77,9 +78,11 @@ export struct CreatorEditor {
           .fontWeight(FontWeight.Medium).layoutWeight(1)
         if (!this.readOnly) {
           Button('+ Add').fontSize(12).height(28).onClick(() => {
-            this.creators = [...this.creators, {
+            let next = [...this.creators, {
               creatorType: 'author', firstName: '', lastName: '', fieldMode: 0
             }];
+            this.creators = next;
+            if (this.onCreatorsChange) { this.onCreatorsChange(next); }
           })
         }
       }
@@ -90,9 +93,11 @@ export struct CreatorEditor {
           creator: creator, index: idx,
           onUpdate: (i: number, c: ZoteroCreator) => {
             let copy = [...this.creators]; copy[i] = c; this.creators = copy;
+            if (this.onCreatorsChange) { this.onCreatorsChange(copy); }
           },
           onDelete: (i: number) => {
             let copy = [...this.creators]; copy.splice(i, 1); this.creators = copy;
+            if (this.onCreatorsChange) { this.onCreatorsChange(copy); }
           },
         })
       }, (_item: ZoteroCreator, index: number): string => `cr-${index}`)

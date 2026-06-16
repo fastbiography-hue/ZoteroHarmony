@@ -5,6 +5,7 @@
  * Ref: elements/itemDetails.js — main item detail form
  *
  * Draft-based edit with explicit Save/Reset.
+ * Draft rebuilds when itemKey changes.
  *
  * ***** END LICENSE BLOCK *****
  */
@@ -30,13 +31,19 @@ interface FieldDraft {
  */
 @Component
 export struct ItemDetailsForm {
-  @Link item: ItemModel;
+  @Prop item: ItemModel = new ItemModel();
+  /** Triggers draft rebuild when switching to a different item. */
+  @Prop itemKey: string = '';
+  @Watch('_onItemSwitch')
+  @Prop itemRevision: number = 0;
   @State itemType: string = 'journalArticle';
   @State draftFields: Map<string, FieldDraft> = new Map();
   @State creators: ZoteroCreator[] = [];
+  @State initialCreatorsJson: string = '';
   @State tags: ZoteroTag[] = [];
   @State readOnly: boolean = false;
   @State isSaving: boolean = false;
+  @State saveStatus: 'idle' | 'dirty' | 'success' | 'error' = 'idle';
   @State saveMessage: string = '';
   @State isDirty: boolean = false;
   onItemSaved?: () => void;
@@ -45,17 +52,22 @@ export struct ItemDetailsForm {
     this._resetDraft();
   }
 
+  /** Rebuild draft when the selected item changes. */
+  private _onItemSwitch(): void {
+    this._resetDraft();
+  }
+
   /** Rebuild draft from current item. */
   private _resetDraft(): void {
     this.itemType = this.item.itemData.get('itemType') ?? this.item.itemTypeName ?? 'journalArticle';
     this.creators = [...this.item.creators];
+    this.initialCreatorsJson = creatorsToJson(this.creators);
     this.tags = [...this.item.tags];
     let fresh = new Map<string, FieldDraft>();
     this.item.itemData.forEach((value: string, key: string) => {
       if (key === 'itemType' || key === 'creator' || key === 'note') { return; }
       fresh.set(key, { oldValue: value, newValue: value, dirty: false });
     });
-    // Ensure common fields always exist in draft
     let common = ['title', 'abstractNote', 'date', 'DOI', 'ISBN', 'ISSN', 'url',
       'publicationTitle', 'publisher', 'place', 'pages', 'volume', 'issue',
       'language', 'shortTitle', 'extra'];
@@ -66,17 +78,22 @@ export struct ItemDetailsForm {
     }
     this.draftFields = fresh;
     this.isDirty = false;
+    this.saveStatus = 'idle';
     this.saveMessage = '';
+    this.isSaving = false;
   }
 
   build() {
     Column() {
       // ---- Save / Reset bar ----
       Row() {
-        if (this.saveMessage.length > 0) {
+        if (this.saveStatus === 'success') {
           Text(this.saveMessage)
-            .fontSize(11).fontColor(ZHColor.SUCCESS).layoutWeight(1)
-        } else if (this.isDirty) {
+            .fontSize(11).fontColor('#2E7D32').layoutWeight(1)
+        } else if (this.saveStatus === 'error') {
+          Text(this.saveMessage)
+            .fontSize(11).fontColor('#C62828').layoutWeight(1)
+        } else if (this.saveStatus === 'dirty') {
           Text('Unsaved changes')
             .fontSize(11).fontColor(ZHColor.WARNING).layoutWeight(1)
         } else {
@@ -107,20 +124,18 @@ export struct ItemDetailsForm {
             onChange: (newType: ItemType) => {
               let old = this.itemType;
               this.itemType = newType as string;
-              if (old !== this.itemType) { this.isDirty = true; }
+              if (old !== this.itemType) { this._markDirty(); }
             },
           })
 
           // ---- Information section ----
           this._sectionHeader('INFORMATION')
 
-          // Title
           FieldEditor({
             fieldName: 'title',
             fieldValue: this._draftVal('title'),
             onChange: (v: string) => { this._setField('title', v); },
           })
-          // Abstract
           FieldEditor({
             fieldName: 'abstractNote',
             fieldValue: this._draftVal('abstractNote'),
@@ -129,7 +144,14 @@ export struct ItemDetailsForm {
           })
 
           // ---- Creators ----
-          CreatorEditor({ creators: $creators, readOnly: this.readOnly })
+          CreatorEditor({
+            creators: $creators,
+            readOnly: this.readOnly,
+            onCreatorsChange: (creators: ZoteroCreator[]) => {
+              this.creators = creators;
+              this.isDirty = this.isDirty || !creatorsJsonEqual(this.initialCreatorsJson, creators);
+            },
+          })
 
           // ---- Publication section ----
           this._sectionHeader('PUBLICATION')
@@ -158,7 +180,7 @@ export struct ItemDetailsForm {
             readOnly: this.readOnly,
             onTagsChange: (tags: ZoteroTag[]) => {
               this.tags = tags;
-              this.isDirty = true;
+              this._markDirty();
             },
           })
 
@@ -194,6 +216,13 @@ export struct ItemDetailsForm {
     this._updateDirtyFlag();
   }
 
+  private _markDirty(): void {
+    if (!this.isDirty) {
+      this.isDirty = true;
+      this.saveStatus = 'dirty';
+    }
+  }
+
   private _updateDirtyFlag(): void {
     let dirty = false;
     this.draftFields.forEach((fd: FieldDraft, _k: string) => {
@@ -202,7 +231,13 @@ export struct ItemDetailsForm {
     if (!dirty && this.itemType !== (this.item.itemData.get('itemType') ?? this.item.itemTypeName ?? 'journalArticle')) {
       dirty = true;
     }
+    if (!dirty) {
+      dirty = !creatorsJsonEqual(this.initialCreatorsJson, this.creators);
+    }
     this.isDirty = dirty;
+    if (dirty && this.saveStatus === 'idle') {
+      this.saveStatus = 'dirty';
+    }
   }
 
   private _toItemTypeEnum(s: string): ItemType {
@@ -216,11 +251,12 @@ export struct ItemDetailsForm {
     return map[s] ?? ItemType.JOURNAL_ARTICLE;
   }
 
-  /** Batch-save: type + changed fields + tags → one flush. */
+  /** Batch-save: type + changed fields + creators + tags → one flush. */
   private async _doSave(): Promise<void> {
     let itemKey = this.item.key ?? '';
     if (itemKey.length === 0) { return; }
     this.isSaving = true;
+    this.saveStatus = 'dirty';
     try {
       let repo = new LibraryRepository();
       await repo.open(getContext(this).getApplicationContext());
@@ -238,11 +274,15 @@ export struct ItemDetailsForm {
         let fd = this.draftFields.get(changedKeys[i])!;
         await repo.updateItemField(itemKey, changedKeys[i], fd.newValue);
       }
-      // 3. Tags
+      // 3. Creators (only if changed)
+      if (!creatorsJsonEqual(this.initialCreatorsJson, this.creators)) {
+        await repo.updateItemCreatorsByKey(itemKey, this.creators);
+      }
+      // 4. Tags
       await repo.replaceItemTags(itemKey, this.tags);
       await repo.close();
 
-      // Update ItemModel in place
+      // Update ItemModel + draft in place
       for (let i = 0; i < changedKeys.length; i++) {
         let fd = this.draftFields.get(changedKeys[i])!;
         this.item.itemData.set(changedKeys[i], fd.newValue);
@@ -252,14 +292,38 @@ export struct ItemDetailsForm {
       this.item.itemData.set('itemType', this.itemType);
       this.item.itemTypeName = this.itemType;
       this.item.tags = this.tags;
+      this.initialCreatorsJson = creatorsToJson(this.creators);
       this.isDirty = false;
+      this.saveStatus = 'success';
       this.saveMessage = 'Saved locally, pending sync';
 
       if (this.onItemSaved) { this.onItemSaved(); }
     } catch (err) {
+      this.saveStatus = 'error';
       this.saveMessage = 'Save failed: ' + (err as Error).message;
     } finally {
       this.isSaving = false;
     }
   }
+}
+
+// ==================================================================
+// Pure helpers for creator comparison (exported for testing)
+// ==================================================================
+
+export function creatorsToJson(creators: ZoteroCreator[]): string {
+  let arr: Record<string, string>[] = [];
+  for (let i = 0; i < creators.length; i++) {
+    arr.push({
+      ct: creators[i].creatorType,
+      fn: creators[i].firstName,
+      ln: creators[i].lastName,
+      fm: `${creators[i].fieldMode}`,
+    });
+  }
+  return JSON.stringify(arr);
+}
+
+export function creatorsJsonEqual(jsonA: string, creatorsB: ZoteroCreator[]): boolean {
+  return jsonA === creatorsToJson(creatorsB);
 }

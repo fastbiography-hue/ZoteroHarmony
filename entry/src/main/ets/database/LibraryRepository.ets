@@ -874,13 +874,64 @@ export class LibraryRepository {
     let typeID = this.toNumber(await this.db.valueQueryAsync(
       `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [newItemType]
     ));
-    if (typeID === 0) { typeID = 1; }
+    if (typeID === 0) {
+      // Unsupported type — do not modify to avoid inconsistency
+      return;
+    }
     await this.db.executeSql(
       `UPDATE items SET itemTypeID = ?, synced = 0, clientDateModified = datetime('now'),
        dateModified = datetime('now') WHERE itemID = ?`,
       [typeID, itemID]
     );
     await this.putItemField(itemID, 'itemType', newItemType);
+    await this.addToSyncQueue(1, 'item', [itemKey]);
+  }
+
+  /** Replace all creators for a local item.  Writes creators + itemCreators + syncQueue. */
+  async updateItemCreatorsByKey(itemKey: string, creators: ZoteroCreator[]): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) { return; }
+    // Clean old
+    await this.db.executeSql(`DELETE FROM itemCreators WHERE itemID = ?`, [itemID]);
+    for (let i = 0; i < creators.length; i++) {
+      let c = creators[i];
+      let lastName = c.lastName;
+      let firstName = c.firstName;
+      let fieldMode = c.fieldMode;
+      // Single-field creator: store name in lastName
+      if (fieldMode === 1 && c.name && c.name.length > 0 && lastName.length === 0) {
+        lastName = c.name;
+      }
+      // Skip empty creators
+      if (lastName.length === 0 && firstName.length === 0 && ((c.name ?? '').length === 0)) {
+        continue;
+      }
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO creators (firstName, lastName, fieldMode) VALUES (?, ?, ?)`,
+        [firstName, lastName, fieldMode]
+      );
+      let creatorID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT creatorID FROM creators WHERE lastName = ? AND firstName = ? AND fieldMode = ?`,
+        [lastName, firstName, fieldMode]
+      ));
+      if (creatorID === 0) { continue; }
+      let creatorTypeID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT creatorTypeID FROM creatorTypes WHERE creatorType = ?`, [c.creatorType]
+      ));
+      if (creatorTypeID === 0) { creatorTypeID = 1; }
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemCreators (itemID, creatorID, creatorTypeID, orderIndex)
+         VALUES (?, ?, ?, ?)`,
+        [itemID, creatorID, creatorTypeID, i]
+      );
+    }
+    await this.db.executeSql(
+      `UPDATE items SET synced = 0, clientDateModified = datetime('now'),
+       dateModified = datetime('now') WHERE itemID = ?`,
+      [itemID]
+    );
     await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 

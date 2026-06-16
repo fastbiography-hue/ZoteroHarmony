@@ -103,13 +103,12 @@ export struct ItemPaneView {
         if (this.selectedView === 'details') {
           Scroll() {
             Column() {
+              // abstractNote is now edited inside ItemDetailsForm's FieldEditor.
               ItemDetailsForm({
                 item: this.item,
+                itemKey: this.item.key ?? '',
+                itemRevision: this.libraryRevision,
                 onItemSaved: this.onItemSaved,
-              })
-              AbstractEditor({
-                text: this.abstractText,
-                onChange: (v: string) => { this.abstractText = v; },
               })
             }
             .width('100%')

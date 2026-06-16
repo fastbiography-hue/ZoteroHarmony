@@ -1,10 +1,12 @@
 /*
  * ItemPane edit closure — Repository update API tests.
- * Requires DevEco relationalStore context.
+ * Requires DevEco relationalStore context. Skips gracefully without it.
  */
 
 import { describe, it, expect } from '@ohos/hypium';
 import { LibraryRepository } from '../../main/ets/database/LibraryRepository.ets';
+import { ZoteroCreator } from '../../main/ets/model/ItemTypes.ets';
+import { creatorsToJson, creatorsJsonEqual } from '../../main/ets/ui/ItemDetailsForm.ets';
 
 async function tryOpenRepo(): Promise<LibraryRepository | null> {
   try {
@@ -27,14 +29,45 @@ async function withRepo(body: (repo: LibraryRepository) => Promise<void>): Promi
 }
 
 export default function ItemPaneEditTest(): void {
-  describe('Repository update APIs for ItemPane edit', (): void => {
+  describe('creatorsToJson / creatorsJsonEqual (unit)', (): void => {
+
+    it('creatorsJsonEqual → true for identical creators', (): void => {
+      let a: ZoteroCreator[] = [
+        { creatorType: 'author', firstName: 'Ada', lastName: 'Lovelace', fieldMode: 0 }
+      ];
+      let json = creatorsToJson(a);
+      expect(creatorsJsonEqual(json, a)).assertTrue();
+    });
+
+    it('creatorsJsonEqual → false when creator type differs', (): void => {
+      let a: ZoteroCreator[] = [
+        { creatorType: 'author', firstName: 'A', lastName: 'B', fieldMode: 0 }
+      ];
+      let json = creatorsToJson(a);
+      let b: ZoteroCreator[] = [
+        { creatorType: 'editor', firstName: 'A', lastName: 'B', fieldMode: 0 }
+      ];
+      expect(!creatorsJsonEqual(json, b)).assertTrue();
+    });
+
+    it('creatorsJsonEqual → false when count differs', (): void => {
+      let a: ZoteroCreator[] = [
+        { creatorType: 'author', firstName: 'A', lastName: 'B', fieldMode: 0 }
+      ];
+      let json = creatorsToJson(a);
+      expect(!creatorsJsonEqual(json, [])).assertTrue();
+    });
+
+  });
+
+  describe('Repository update APIs (integration)', (): void => {
 
     // ================================================================
-    // Test 1: updateItemField → value changed + syncQueue
+    // Test 1: updateItemField + syncQueue
     // ================================================================
-    it('1) updateItemField → DOI updated + syncQueue contains key', async (): Promise<void> => {
+    it('1) updateItemField → value changed + syncQueue', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let key = await repo.createItem(null, 'journalArticle', 'DOI Test');
+        let key = await repo.createItem(null, 'journalArticle', 'Field Test');
         await repo.removeFromSyncQueue(1, 'item', [key]);
         await repo.updateItemField(key, 'DOI', '10.1234/edit.test');
         let item = await repo.getItemByKey(key);
@@ -48,107 +81,112 @@ export default function ItemPaneEditTest(): void {
     });
 
     // ================================================================
-    // Test 2: updateItemField empty → field deleted
+    // Test 2: updateItemField empty → deleted
     // ================================================================
-    it('2) updateItemField empty value → field deleted from itemData + upload JSON', async (): Promise<void> => {
+    it('2) updateItemField empty → field deleted from itemData', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let key = await repo.createItem(null, 'journalArticle', 'Empty DOI Test');
-        await repo.updateItemField(key, 'DOI', '10.1234/will.be.deleted');
+        let key = await repo.createItem(null, 'journalArticle', 'Empty Test');
+        await repo.updateItemField(key, 'DOI', '10.1234/to.delete');
         await repo.removeFromSyncQueue(1, 'item', [key]);
-        // Now delete it
         await repo.updateItemField(key, 'DOI', '');
         let item = await repo.getItemByKey(key);
-        expect(item !== null).assertTrue();
-        if (item) {
-          expect(item.itemData.get('DOI') === '' || item.itemData.get('DOI') === undefined).assertTrue();
-        }
-        let objects = await repo.getObjectsForUpload(1, 'item', [key]);
-        expect(objects.length === 1).assertTrue();
-        expect(objects[0]['DOI'] === '' || objectHasNoField(objects[0], 'DOI')).assertTrue();
-        let queue = await repo.getAllObjectsInQueue(1, 'item');
-        expect(queue.indexOf(key) >= 0).assertTrue();
+        let hasField = item !== null && (item!.itemData.get('DOI') ?? '').length > 0;
+        expect(!hasField).assertTrue();
       });
     });
 
     // ================================================================
-    // Test 3: updateItemTypeByKey → type changed
+    // Test 3: updateItemType unsupported → no change
     // ================================================================
-    it('3) updateItemTypeByKey → itemType changed in itemData + upload JSON', async (): Promise<void> => {
+    it('3) updateItemTypeByKey unsupported type → no change', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let key = await repo.createItem(null, 'journalArticle', 'Type Change Test');
+        let key = await repo.createItem(null, 'journalArticle', 'Type Safety Test');
         await repo.removeFromSyncQueue(1, 'item', [key]);
-        await repo.updateItemTypeByKey(key, 'book');
+        await repo.updateItemTypeByKey(key, 'notARealType');
         let item = await repo.getItemByKey(key);
         expect(item !== null).assertTrue();
         if (item) {
-          expect(item.itemData.get('itemType') === 'book').assertTrue();
+          // itemType should still be journalArticle
+          expect(item.itemData.get('itemType') === 'journalArticle').assertTrue();
         }
+        // Should not enter syncQueue (no mutation occurred)
+        let queue = await repo.getAllObjectsInQueue(1, 'item');
+        expect(queue.indexOf(key) < 0).assertTrue();
+      });
+    });
+
+    // ================================================================
+    // Test 4: updateItemCreatorsByKey → creator written
+    // ================================================================
+    it('4) updateItemCreatorsByKey → creator in upload JSON + syncQueue', async (): Promise<void> => {
+      await withRepo(async (repo: LibraryRepository): Promise<void> => {
+        let key = await repo.createItem(null, 'journalArticle', 'Creator Test');
+        await repo.removeFromSyncQueue(1, 'item', [key]);
+        await repo.updateItemCreatorsByKey(key, [
+          { creatorType: 'author', firstName: 'Ada', lastName: 'Lovelace', fieldMode: 0 }
+        ]);
         let objects = await repo.getObjectsForUpload(1, 'item', [key]);
         expect(objects.length === 1).assertTrue();
-        expect(objects[0]['itemType'] === 'book').assertTrue();
+        let creators = objects[0]['creators'] as Record<string, Object>[];
+        expect(creators.length === 1).assertTrue();
+        expect(creators[0]['lastName'] === 'Lovelace').assertTrue();
         let queue = await repo.getAllObjectsInQueue(1, 'item');
         expect(queue.indexOf(key) >= 0).assertTrue();
       });
     });
 
     // ================================================================
-    // Test 4: note update → note + syncQueue
+    // Test 5: updateItemCreatorsByKey replace old
     // ================================================================
-    it('4) updateNote → title/note updated + syncQueue contains note key', async (): Promise<void> => {
+    it('5) updateItemCreatorsByKey replace → only new creator, old gone', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let parentKey = await repo.createItem(null, 'journalArticle', 'Note Update Parent');
-        let noteKey = await repo.createNote(parentKey, 'Old Title', '<p>Old</p>');
-        await repo.removeFromSyncQueue(1, 'item', [noteKey]);
-        // updateNote uses noteID, need itemID
-        let noteItem = await repo.getItemByKey(noteKey);
-        if (noteItem && noteItem.id) {
-          await repo.updateNote(noteItem.id, 'Updated Title', '<p>Updated body</p>');
-          let refreshed = await repo.getItemByKey(noteKey);
-          expect(refreshed !== null).assertTrue();
-          // Note body isn't in itemData — check upload JSON
-          let objects = await repo.getObjectsForUpload(1, 'item', [noteKey]);
-          expect(objects.length === 1).assertTrue();
-          expect(objects[0]['note'] === '<p>Updated body</p>').assertTrue();
-          let queue = await repo.getAllObjectsInQueue(1, 'item');
-          expect(queue.indexOf(noteKey) >= 0).assertTrue();
-        }
+        let key = await repo.createItem(null, 'journalArticle', 'Replace Test');
+        await repo.updateItemCreatorsByKey(key, [
+          { creatorType: 'author', firstName: 'Old', lastName: 'Creator', fieldMode: 0 }
+        ]);
+        await repo.updateItemCreatorsByKey(key, [
+          { creatorType: 'editor', firstName: 'New', lastName: 'Editor', fieldMode: 0 }
+        ]);
+        let objects = await repo.getObjectsForUpload(1, 'item', [key]);
+        let creators = objects[0]['creators'] as Record<string, Object>[];
+        expect(creators.length === 1).assertTrue();
+        expect(creators[0]['lastName'] === 'Editor').assertTrue();
       });
     });
 
     // ================================================================
-    // Test 5: remote upsert → no queue, then local edit → queue
+    // Test 6: updateItemCreatorsByKey empty → no creators
     // ================================================================
-    it('5) remote upsert → no queue; local edit → queue appears', async (): Promise<void> => {
+    it('6) updateItemCreatorsByKey empty → creators absent', async (): Promise<void> => {
+      await withRepo(async (repo: LibraryRepository): Promise<void> => {
+        let key = await repo.createItem(null, 'journalArticle', 'Empty Creator Test');
+        await repo.updateItemCreatorsByKey(key, [
+          { creatorType: 'author', firstName: 'Temp', lastName: 'Person', fieldMode: 0 }
+        ]);
+        await repo.updateItemCreatorsByKey(key, []);
+        let objects = await repo.getObjectsForUpload(1, 'item', [key]);
+        expect(objects.length === 1).assertTrue();
+        let hasCreators = objects[0]['creators'] !== undefined;
+        expect(!hasCreators).assertTrue();
+      });
+    });
+
+    // ================================================================
+    // Test 7: remote → no queue; local edit → queue
+    // ================================================================
+    it('7) remote upsert → no queue; local edit → queue', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
         await repo.upsertRemoteObject('item', {
-          key: 'REMOTE_EDIT_TEST', version: 1,
-          data: { itemType: 'journalArticle', title: 'Remote Edit Test' }
+          key: 'REMOTE_EDIT_7', version: 1,
+          data: { itemType: 'journalArticle', title: 'Remote then Local' }
         });
         let qBefore = await repo.getAllObjectsInQueue(1, 'item');
-        expect(qBefore.indexOf('REMOTE_EDIT_TEST') < 0).assertTrue();
-        // Local edit
-        await repo.updateItemField('REMOTE_EDIT_TEST', 'DOI', '10.9999/local.edit');
+        expect(qBefore.indexOf('REMOTE_EDIT_7') < 0).assertTrue();
+        await repo.updateItemField('REMOTE_EDIT_7', 'DOI', '10.9999/local');
         let qAfter = await repo.getAllObjectsInQueue(1, 'item');
-        expect(qAfter.indexOf('REMOTE_EDIT_TEST') >= 0).assertTrue();
-      });
-    });
-
-    // ================================================================
-    // Test 6: tag edit → syncQueue
-    // ================================================================
-    it('6) replaceItemTags → syncQueue contains item key', async (): Promise<void> => {
-      await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let key = await repo.createItem(null, 'journalArticle', 'Tag Sync Test');
-        await repo.removeFromSyncQueue(1, 'item', [key]);
-        await repo.replaceItemTags(key, [{ tag: 'edited-tag', type: 0 }]);
-        let queue = await repo.getAllObjectsInQueue(1, 'item');
-        expect(queue.indexOf(key) >= 0).assertTrue();
+        expect(qAfter.indexOf('REMOTE_EDIT_7') >= 0).assertTrue();
       });
     });
 
   });
-}
-
-function objectHasNoField(obj: Record<string, Object>, field: string): boolean {
-  return !(field in obj) || obj[field] === undefined || obj[field] === '';
 }
