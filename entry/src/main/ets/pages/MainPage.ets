@@ -28,10 +28,11 @@ import { LibraryRepository, PendingSyncSummary } from '../database/LibraryReposi
 enum PhoneView { COLLECTIONS, ITEMS, DETAIL }
 
 function formatPendingSyncSummary(summary: PendingSyncSummary): string {
-  let parts: string[] = [];
-  if (summary.queueCount > 0) { parts.push(`${summary.queueCount} pending`); }
-  if (summary.deleteCount > 0) { parts.push(`${summary.deleteCount} deletions`); }
-  return parts.join(', ');
+  let total = summary.queueCount + summary.deleteCount;
+  if (total === 0) { return ''; }
+  if (summary.deleteCount === 0) { return `${summary.queueCount} changes pending`; }
+  if (summary.queueCount === 0) { return `${summary.deleteCount} deletions pending`; }
+  return `${summary.queueCount} changes, ${summary.deleteCount} deletions`;
 }
 
 @Entry
@@ -60,6 +61,7 @@ struct MainPage {
   @StorageLink('zotero_theme') themeMode: string = 'light';
   @State pendingSyncMap: Record<string, boolean> = {};
   @State pendingSyncSummaryText: string = '';
+  @State pendingSyncRevision: number = 0;
   private syncRunner: SyncRunner | null = null;
 
   aboutToAppear(): void {
@@ -293,6 +295,7 @@ struct MainPage {
               }
             },
             pendingSyncMap: this.pendingSyncMap,
+            pendingSyncRevision: this.pendingSyncRevision,
           })
           .layoutWeight(1)
         }
@@ -507,6 +510,7 @@ struct MainPage {
       return repo.getPendingSyncKeySet();
     }).then((map: Record<string, boolean>) => {
       this.pendingSyncMap = map;
+      this.pendingSyncRevision++;
       repo.close();
     }).catch((_err: Error) => {
       repo.close();
@@ -565,6 +569,7 @@ struct MainPage {
         this.selectedItemKeys = [];
         this.currentItem = new ItemModel();
         this.revision++;
+        this._refreshPendingSyncState();
         repo.close();
       }).catch((_err: Error) => {
         repo.close();
@@ -598,6 +603,7 @@ struct MainPage {
       this.collectionDialogTitle = '';
       this.collectionDialogValue = '';
       this.revision++;
+      this._refreshPendingSyncState();
       repo.close();
     }).catch((_err: Error) => {
       this.collectionDialogVisible = false;

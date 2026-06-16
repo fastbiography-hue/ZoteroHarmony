@@ -1628,17 +1628,21 @@ export class LibraryRepository {
     return qCount > 0 || dCount > 0;
   }
 
-  /** Return all keys from syncQueue + syncDeleteLog as a lookup map. */
+  /**
+   * Return item keys currently in syncQueue or syncDeleteLog.
+   * Used by ItemTree / ItemPane for pending-sync dot markers.
+   * Only returns objectType='item' entries.
+   */
   async getPendingSyncKeySet(libraryID: number = 1): Promise<Record<string, boolean>> {
     let map: Record<string, boolean> = {};
     let qRows = await this.db.queryAsync(
-      `SELECT key FROM syncQueue WHERE libraryID = ?`, [libraryID]
+      `SELECT key FROM syncQueue WHERE libraryID = ? AND objectType = 'item'`, [libraryID]
     );
     for (let i = 0; i < qRows.length; i++) {
       map[this.toString(qRows[i]['key'], '')] = true;
     }
     let dRows = await this.db.queryAsync(
-      `SELECT key FROM syncDeleteLog WHERE libraryID = ?`, [libraryID]
+      `SELECT key FROM syncDeleteLog WHERE libraryID = ? AND objectType = 'item'`, [libraryID]
     );
     for (let i = 0; i < dRows.length; i++) {
       map[this.toString(dRows[i]['key'], '')] = true;

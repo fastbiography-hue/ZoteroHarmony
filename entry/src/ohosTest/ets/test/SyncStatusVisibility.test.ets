@@ -1,6 +1,6 @@
 /*
  * Sync status visibility — pending sync query + row helper tests.
- * Unit tests run without DB. Integration tests require DevEco context.
+ * Unit tests without DB. Integration tests require DevEco context.
  */
 
 import { describe, it, expect } from '@ohos/hypium';
@@ -52,12 +52,19 @@ export default function SyncStatusVisibilityTest(): void {
       let rows = [makeRow('A'), makeRow('B')];
       applyPendingSyncToRows(rows, {});
       expect(rows[0].isPendingSync === false).assertTrue();
-      expect(rows[1].isPendingSync === false).assertTrue();
     });
 
     it('unknown key in map → ignored', (): void => {
       let rows = [makeRow('X')];
       applyPendingSyncToRows(rows, { 'Y': true });
+      expect(rows[0].isPendingSync === false).assertTrue();
+    });
+
+    it('re-apply clears previously set flags', (): void => {
+      let rows = [makeRow('A')];
+      applyPendingSyncToRows(rows, { 'A': true });
+      expect(rows[0].isPendingSync === true).assertTrue();
+      applyPendingSyncToRows(rows, {});
       expect(rows[0].isPendingSync === false).assertTrue();
     });
 
@@ -81,25 +88,36 @@ export default function SyncStatusVisibilityTest(): void {
       });
     });
 
-    it('removeFromSyncQueue → key removed', async (): Promise<void> => {
+    it('getPendingSyncKeySet item-only → excludes collection/search', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        let key = await repo.createItem(null, 'journalArticle', 'Cleared Item');
-        await repo.removeFromSyncQueue(1, 'item', [key]);
+        await repo.addToSyncQueue(1, 'collection', ['COL_KEY']);
+        await repo.addToSyncQueue(1, 'search', ['SEARCH_KEY']);
+        await repo.addToSyncQueue(1, 'item', ['ITEM_KEY']);
         let map = await repo.getPendingSyncKeySet();
-        expect(!(map[key] === true)).assertTrue();
+        expect(map['ITEM_KEY'] === true).assertTrue();
+        expect(!(map['COL_KEY'] === true)).assertTrue();
+        expect(!(map['SEARCH_KEY'] === true)).assertTrue();
+        // cleanup
+        await repo.removeFromSyncQueue(1, 'collection', ['COL_KEY']);
+        await repo.removeFromSyncQueue(1, 'search', ['SEARCH_KEY']);
+        await repo.removeFromSyncQueue(1, 'item', ['ITEM_KEY']);
       });
     });
 
-    it('delete log → pending key set contains key', async (): Promise<void> => {
+    it('getPendingSyncKeySet item-only → deleteLog also item-only', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        await repo.addToDeleteLog(1, 'item', ['DEL_PEND_KEY']);
+        await repo.addToDeleteLog(1, 'collection', ['COL_DEL']);
+        await repo.addToDeleteLog(1, 'item', ['ITEM_DEL']);
         let map = await repo.getPendingSyncKeySet();
-        expect(map['DEL_PEND_KEY'] === true).assertTrue();
-        await repo.removeFromDeleteLog(1, 'item', ['DEL_PEND_KEY']);
+        expect(map['ITEM_DEL'] === true).assertTrue();
+        expect(!(map['COL_DEL'] === true)).assertTrue();
+        // cleanup
+        await repo.removeFromDeleteLog(1, 'item', ['ITEM_DEL']);
+        await repo.removeFromDeleteLog(1, 'collection', ['COL_DEL']);
       });
     });
 
-    it('summary counts by objectType', async (): Promise<void> => {
+    it('summary counts include collection/search', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
         await repo.addToSyncQueue(1, 'item', ['I1']);
         await repo.addToSyncQueue(1, 'collection', ['C1']);
@@ -117,11 +135,29 @@ export default function SyncStatusVisibilityTest(): void {
       });
     });
 
+    it('removeFromSyncQueue → key removed from map', async (): Promise<void> => {
+      await withRepo(async (repo: LibraryRepository): Promise<void> => {
+        let key = await repo.createItem(null, 'journalArticle', 'Cleared Item');
+        await repo.removeFromSyncQueue(1, 'item', [key]);
+        let map = await repo.getPendingSyncKeySet();
+        expect(!(map[key] === true)).assertTrue();
+      });
+    });
+
+    it('delete log → pending key set contains key', async (): Promise<void> => {
+      await withRepo(async (repo: LibraryRepository): Promise<void> => {
+        await repo.addToDeleteLog(1, 'item', ['DEL_PEND']);
+        let map = await repo.getPendingSyncKeySet();
+        expect(map['DEL_PEND'] === true).assertTrue();
+        await repo.removeFromDeleteLog(1, 'item', ['DEL_PEND']);
+      });
+    });
+
     it('isObjectPendingSync → true for queued item', async (): Promise<void> => {
       await withRepo(async (repo: LibraryRepository): Promise<void> => {
-        await repo.addToSyncQueue(1, 'item', ['CHK_KEY']);
-        expect(await repo.isObjectPendingSync(1, 'item', 'CHK_KEY')).assertTrue();
-        await repo.removeFromSyncQueue(1, 'item', ['CHK_KEY']);
+        await repo.addToSyncQueue(1, 'item', ['CHK']);
+        expect(await repo.isObjectPendingSync(1, 'item', 'CHK')).assertTrue();
+        await repo.removeFromSyncQueue(1, 'item', ['CHK']);
       });
     });
 

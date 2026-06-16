@@ -450,6 +450,9 @@ export struct ItemTree {
   @StorageLink('zotero_theme') themeMode: string = 'light';
   /** Pending sync key map — applied to rows after rebuild. */
   @Prop pendingSyncMap: Record<string, boolean> = {};
+  /** Drives re-application of pending flags without DB re-query. */
+  @Watch('_onPendingSyncChanged')
+  @Prop pendingSyncRevision: number = 0;
   onItemSelected?: (item: ItemModel) => void;
   onItemAction?: (action: string, item: ItemModel) => void;
 
@@ -597,6 +600,17 @@ export struct ItemTree {
       repo.close();
       return null;
     });
+  }
+
+  private _onPendingSyncChanged(): void {
+    this._applyPendingSyncFlags();
+  }
+
+  /** Re-apply pending flags to current rows without DB re-query. */
+  private _applyPendingSyncFlags(): void {
+    let copy = [...this.rows];
+    applyPendingSyncToRows(copy, this.pendingSyncMap);
+    this.rows = copy;
   }
 
   private _setRows(rows: ItemTreeRowModel[]): void {
