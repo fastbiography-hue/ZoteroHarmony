@@ -343,6 +343,10 @@ struct MainPage {
                 this._executeCommand(ZoteroCommands.ADD_TO_COLLECTION);
                 return;
               }
+              if (action === 'removeFromCollection') {
+                this._executeCommand(ZoteroCommands.REMOVE_FROM_COLLECTION);
+                return;
+              }
               if (action === 'restore') {
                 this._executeCommand(ZoteroCommands.RESTORE);
                 return;
@@ -944,7 +948,8 @@ struct MainPage {
 
   private _executeCommand(commandID: string): void {
     zoteroCommandRegistry.execute(commandID, this._commandContext()).then(() => {
-      if (commandID === ZoteroCommands.DELETE || commandID === ZoteroCommands.RESTORE || commandID === ZoteroCommands.DUPLICATE_MERGE) {
+      if (commandID === ZoteroCommands.DELETE || commandID === ZoteroCommands.RESTORE ||
+          commandID === ZoteroCommands.DUPLICATE_MERGE || commandID === ZoteroCommands.REMOVE_FROM_COLLECTION) {
         this.selectedItemKey = '';
         this.selectedItemKeys = [];
         this.currentItem = new ItemModel();

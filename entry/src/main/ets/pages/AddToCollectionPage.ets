@@ -17,6 +17,7 @@ struct AddToCollectionPage {
   @State selectedCollectionName: string = '';
   @State itemKeys: string[] = [];
   @State statusText: string = '';
+  @State busy: boolean = false;
   @StorageLink('zotero_theme') themeMode: string = 'light';
 
   aboutToAppear(): void {
@@ -45,12 +46,12 @@ struct AddToCollectionPage {
             .fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
         }
         .layoutWeight(1)
-        Button('Add')
+        Button(this.busy ? 'Adding…' : 'Add')
           .fontSize(12)
           .height(32)
           .backgroundColor(ZHColor.BRAND)
           .fontColor(ZHColor.TEXT_INVERSE)
-          .enabled(this.selectedCollectionKey.length > 0 && this.itemKeys.length > 0)
+          .enabled(!this.busy && this.selectedCollectionKey.length > 0 && this.itemKeys.length > 0)
           .onClick(() => { this._applySelection(); })
       }
       .width('100%')
@@ -127,21 +128,24 @@ struct AddToCollectionPage {
     .backgroundColor(this.themeMode === 'dark' ? '#11151B' : ZHColor.SURFACE)
   }
 
-  private _applySelection(): void {
-    if (this.selectedCollectionKey.length === 0 || this.itemKeys.length === 0) {
+  private async _applySelection(): Promise<void> {
+    if (this.busy || this.selectedCollectionKey.length === 0 || this.itemKeys.length === 0) {
       return;
     }
+    this.busy = true;
     let repo = new LibraryRepository();
-    repo.open(getContext(this).getApplicationContext()).then(() => {
-      return repo.addItemsToCollection(this.itemKeys, this.selectedCollectionKey);
-    }).then(() => {
+    try {
+      await repo.open(getContext(this).getApplicationContext());
+      await repo.addItemsToCollection(this.itemKeys, this.selectedCollectionKey);
+      await repo.close();
       this.statusText = `Added ${this.itemKeys.length} item${this.itemKeys.length === 1 ? '' : 's'} to ${this.selectedCollectionName}`;
       AppStore.libraryRevision = AppStore.libraryRevision + 1;
       setTimeout(() => { router.back(); }, 180);
-      repo.close();
-    }).catch((_err: Error) => {
+    } catch (_err) {
       this.statusText = 'Could not add items to collection';
-      repo.close();
-    });
+      try { await repo.close(); } catch (_e) {}
+    } finally {
+      this.busy = false;
+    }
   }
 }

@@ -94,9 +94,12 @@ export class ZoteroCommandRegistry {
         let title = (await repo.getItemByKey(parentKey))?.itemData.get('title') ?? 'New Note';
         let noteKey = await repo.createNote(parentKey, `${title} Note`, '');
         await repo.close();
-        if (context.onLibraryChanged) { context.onLibraryChanged(); }
-        if (noteKey.length > 0 && context.onItemCreated) {
-          context.onItemCreated(noteKey, 'note', 'Note added');
+        if (noteKey.length > 0) {
+          if (context.onItemCreated) {
+            context.onItemCreated(noteKey, 'note', 'Note added');
+          } else if (context.onLibraryChanged) {
+            context.onLibraryChanged();
+          }
         } else if (context.onWorkflowMessage) {
           context.onWorkflowMessage('Failed to add note');
         }
@@ -108,32 +111,59 @@ export class ZoteroCommandRegistry {
       shortcut: '',
       enabled: (context: ZoteroCommandContext): boolean => context.hasSelection,
       execute: async (context: ZoteroCommandContext): Promise<void> => {
-        let url = (await QuickCopy.readText()).trim();
+        let url = '';
+        try { url = (await QuickCopy.readText()).trim(); } catch (_err) { url = ''; }
         let attachmentKey = '';
         let repo = new LibraryRepository();
         await repo.open(context.appContext);
         try {
           if (url.length > 0 && (url.startsWith('http://') || url.startsWith('https://'))) {
             attachmentKey = await repo.createLinkedUrlAttachment(context.itemKey, url);
-          } else if (url.length > 0 && fileIo.accessSync(url)) {
-            attachmentKey = await repo.createImportedFileAttachment(context.itemKey, url, context.appContext);
           } else {
-            let documentSelectOptions = new picker.DocumentSelectOptions();
-            documentSelectOptions.maxSelectNumber = 1;
-            let documentViewPicker = new picker.DocumentViewPicker(context.appContext);
-            let uris = await documentViewPicker.select(documentSelectOptions);
-            if (uris.length > 0) {
-              attachmentKey = await repo.createImportedFileAttachment(context.itemKey, uris[0], context.appContext);
+            let isFile = false;
+            try { isFile = url.length > 0 && fileIo.accessSync(url); } catch (_e) { isFile = false; }
+            if (isFile) {
+              attachmentKey = await repo.createImportedFileAttachment(context.itemKey, url, context.appContext);
+            } else {
+              let documentSelectOptions = new picker.DocumentSelectOptions();
+              documentSelectOptions.maxSelectNumber = 1;
+              let documentViewPicker = new picker.DocumentViewPicker(context.appContext);
+              let uris = await documentViewPicker.select(documentSelectOptions);
+              if (uris.length > 0) {
+                attachmentKey = await repo.createImportedFileAttachment(context.itemKey, uris[0], context.appContext);
+              }
             }
           }
         } finally {
           await repo.close();
         }
-        if (context.onLibraryChanged) { context.onLibraryChanged(); }
-        if (attachmentKey.length > 0 && context.onItemCreated) {
-          context.onItemCreated(attachmentKey, 'details', 'Attachment added');
+        if (attachmentKey.length > 0) {
+          if (context.onItemCreated) {
+            context.onItemCreated(attachmentKey, 'details', 'Attachment added');
+          } else if (context.onLibraryChanged) {
+            context.onLibraryChanged();
+          }
         } else if (context.onWorkflowMessage) {
           context.onWorkflowMessage('No attachment added');
+        }
+      },
+    });
+    this.register({
+      id: ZoteroCommands.REMOVE_FROM_COLLECTION,
+      title: 'Remove from Collection',
+      shortcut: '',
+      enabled: (context: ZoteroCommandContext): boolean =>
+        context.hasSelection && context.viewMode === 'collection' && context.collectionKey.length > 0,
+      execute: async (context: ZoteroCommandContext): Promise<void> => {
+        let keys = context.itemKeys.length > 0 ? context.itemKeys : [context.itemKey];
+        if (keys.length === 0) { return; }
+        let repo = new LibraryRepository();
+        await repo.open(context.appContext);
+        await repo.removeItemsFromCollection(keys, context.collectionKey);
+        await repo.close();
+        if (context.onLibraryChanged) { context.onLibraryChanged(); }
+        if (context.onWorkflowMessage) {
+          context.onWorkflowMessage('Removed from collection');
         }
       },
     });

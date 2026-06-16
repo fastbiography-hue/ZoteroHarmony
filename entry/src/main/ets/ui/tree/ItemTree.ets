@@ -306,6 +306,10 @@ struct TreeRow {
         Button('Add to collection').fontSize(13).height(36).width('100%')
           .onClick(() => { if (this.onMenuAction) { this.onMenuAction('addToCollection', this.row); } })
       }
+      if (this.viewMode === 'collection') {
+        Button('Remove from collection').fontSize(13).height(36).width('100%')
+          .onClick(() => { if (this.onMenuAction) { this.onMenuAction('removeFromCollection', this.row); } })
+      }
       Button(this.viewMode === 'trash' ? 'Restore' : 'Delete').fontSize(13).height(36).width('100%')
         .onClick(() => {
           if (this.onMenuAction) {

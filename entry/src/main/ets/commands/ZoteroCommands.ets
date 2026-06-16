@@ -17,6 +17,7 @@ export class ZoteroCommands {
   static readonly DELETE: string = 'zotero.delete';
   static readonly RESTORE: string = 'zotero.restore';
   static readonly DUPLICATE_MERGE: string = 'zotero.duplicateMerge';
+  static readonly REMOVE_FROM_COLLECTION: string = 'zotero.removeFromCollection';
   static readonly OPEN_READER: string = 'zotero.openReader';
   static readonly SHOW_PREFERENCES: string = 'zotero.showPreferences';
 }

@@ -1380,6 +1380,34 @@ export class LibraryRepository {
     return results;
   }
 
+  /** Remove items from a collection (not trash).  Updates syncQueue. */
+  async removeItemsFromCollection(itemKeys: string[], collectionKey: string): Promise<void> {
+    if (itemKeys.length === 0 || collectionKey.length === 0) { return; }
+    let collectionID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+      [collectionKey]
+    ));
+    if (collectionID === 0) { return; }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < itemKeys.length; i++) {
+        let itemID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`,
+          [itemKeys[i]]
+        ));
+        if (itemID === 0) { continue; }
+        await this.db.executeSql(
+          `DELETE FROM collectionItems WHERE collectionID = ? AND itemID = ?`,
+          [collectionID, itemID]
+        );
+        await this.db.executeSql(
+          `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+          [itemID]
+        );
+      }
+    });
+    await this.addToSyncQueue(1, 'item', itemKeys);
+  }
+
   async addItemsToCollection(itemKeys: string[], collectionKey: string): Promise<void> {
     if (itemKeys.length === 0 || collectionKey.length === 0) {
       return;

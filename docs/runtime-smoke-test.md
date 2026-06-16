@@ -120,6 +120,34 @@
 - [ ] Add Identifier fails → dialog stays open, red "Failed to add identifier"
 - [ ] Rapid double-click Create/Add does not create duplicates
 
+## O. Add to Collection
+
+- [ ] Select items in My Library
+- [ ] Tap **Add** (right toolbar) or row menu **Add to collection**
+- [ ] AddToCollectionPage opens
+- [ ] Select a target collection in left pane
+- [ ] Tap **Add** → button shows "Adding…", disabled
+- [ ] Page closes → returns to MainPage
+- [ ] Switch to target collection → items appear
+- [ ] Pending dot + pending count updated
+
+## P. Remove from Collection
+
+- [ ] Enter a collection (not My Library)
+- [ ] Select an item
+- [ ] Row menu → **Remove from collection**
+- [ ] Item disappears from current collection view
+- [ ] Switch to My Library → item still exists (not trashed)
+- [ ] Footer shows "Removed from collection"
+- [ ] Pending dot + pending count updated
+
+## Q. Delete (stays Trash)
+
+- [ ] In collection view, tap **Delete** on an item
+- [ ] Item moves to Trash (not just removed from collection)
+- [ ] Switch to Trash → item appears
+- [ ] Remove from Collection does NOT move to Trash
+
 ## N. App Restart Auth State
 
 - [ ] Close and reopen app
