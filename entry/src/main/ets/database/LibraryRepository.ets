@@ -1356,6 +1356,272 @@ export class LibraryRepository {
     return qCount > 0 || dCount > 0;
   }
 
+  // ==================================================================
+  // Upload serialization — build Zotero Web API v3 objects from local DB
+  // ==================================================================
+
+  /** Dispatch to type-specific serializer.  Does NOT touch syncQueue. */
+  async getObjectsForUpload(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<Record<string, Object>[]> {
+    if (keys.length === 0) { return []; }
+    if (objectType === 'collection') {
+      return this.getCollectionsForUpload(libraryID, keys);
+    }
+    if (objectType === 'search') {
+      return this.getSearchesForUpload(libraryID, keys);
+    }
+    return this.getItemsForUpload(libraryID, keys);
+  }
+
+  private async getCollectionsForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
+    let results: Record<string, Object>[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      let rows = await this.db.queryAsync(
+        `SELECT collectionID, collectionName, parentCollectionID, key, version
+         FROM collections WHERE libraryID = ? AND key = ?`,
+        [libraryID, keys[i]]
+      );
+      if (rows.length === 0) { continue; }
+      let name = this.toString(rows[0]['collectionName'], 'Untitled');
+      let version = this.toNumber(rows[0]['version']);
+      let parentID = this.toNullableNumber(rows[0]['parentCollectionID']);
+      let parentKey: string | boolean = false;
+      if (parentID !== null) {
+        let pk = await this.db.valueQueryAsync(
+          `SELECT key FROM collections WHERE collectionID = ?`, [parentID]
+        );
+        parentKey = this.toString(pk, '');
+        if ((parentKey as string).length === 0) { parentKey = false; }
+      }
+      results.push({ key: keys[i], version, name, parentCollection: parentKey });
+    }
+    return results;
+  }
+
+  private async getSearchesForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
+    let results: Record<string, Object>[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      let rows = await this.db.queryAsync(
+        `SELECT savedSearchID, savedSearchName, key, version
+         FROM savedSearches WHERE libraryID = ? AND key = ?`,
+        [libraryID, keys[i]]
+      );
+      if (rows.length === 0) { continue; }
+      let name = this.toString(rows[0]['savedSearchName'], 'Saved Search');
+      let version = this.toNumber(rows[0]['version']);
+      let savedSearchID = this.toNumber(rows[0]['savedSearchID']);
+      let condRows = await this.db.queryAsync(
+        `SELECT condition, operator, value, required
+         FROM savedSearchConditions WHERE savedSearchID = ? ORDER BY searchConditionID`,
+        [savedSearchID]
+      );
+      let conditions: Record<string, Object>[] = [];
+      for (let c = 0; c < condRows.length; c++) {
+        conditions.push({
+          condition: this.toString(condRows[c]['condition'], ''),
+          operator: this.toString(condRows[c]['operator'], ''),
+          value: this.toString(condRows[c]['value'], ''),
+          required: this.toNumber(condRows[c]['required']) > 0,
+        });
+      }
+      results.push({ key: keys[i], version, name, conditions });
+    }
+    return results;
+  }
+
+  private async getItemsForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
+    let results: Record<string, Object>[] = [];
+    for (let ki = 0; ki < keys.length; ki++) {
+      let itemKey = keys[ki];
+      let itemRows = await this.db.queryAsync(
+        `SELECT i.itemID, i.key, i.version, i.dateAdded, i.dateModified,
+                it.typeName AS itemType
+         FROM items i
+         JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+         WHERE i.libraryID = ? AND i.key = ?`,
+        [libraryID, itemKey]
+      );
+      if (itemRows.length === 0) { continue; }
+      let itemID = this.toNumber(itemRows[0]['itemID']);
+      let itemType = this.toString(itemRows[0]['itemType'], 'journalArticle');
+      let version = this.toNumber(itemRows[0]['version']);
+      let obj: Record<string, Object> = {
+        key: itemKey, version, itemType,
+      };
+
+      // Scalar fields (top-level, per Zotero API)
+      let fieldRows = await this.db.queryAsync(
+        `SELECT f.fieldName, v.value
+         FROM itemData d
+         JOIN fields f ON f.fieldID = d.fieldID
+         JOIN itemDataValues v ON v.valueID = d.valueID
+         WHERE d.itemID = ?`,
+        [itemID]
+      );
+      for (let fi = 0; fi < fieldRows.length; fi++) {
+        let fieldName = this.toString(fieldRows[fi]['fieldName'], '');
+        // Skip structural pseudo-fields stored in itemData for convenience
+        if (fieldName === 'itemType' || fieldName === 'creator' || fieldName === 'note') {
+          continue;
+        }
+        obj[fieldName] = this.toString(fieldRows[fi]['value'], '');
+      }
+
+      // Creators
+      let creatorRows = await this.db.queryAsync(
+        `SELECT cr.firstName, cr.lastName, cr.fieldMode, ct.creatorType, ic.orderIndex
+         FROM itemCreators ic
+         JOIN creators cr ON cr.creatorID = ic.creatorID
+         LEFT JOIN creatorTypes ct ON ct.creatorTypeID = ic.creatorTypeID
+         WHERE ic.itemID = ?
+         ORDER BY ic.orderIndex`,
+        [itemID]
+      );
+      if (creatorRows.length > 0) {
+        let creators: Record<string, Object>[] = [];
+        for (let ci = 0; ci < creatorRows.length; ci++) {
+          let cr: Record<string, Object> = {
+            creatorType: this.toString(creatorRows[ci]['creatorType'], 'author'),
+          };
+          let fm = this.toNumber(creatorRows[ci]['fieldMode']);
+          if (fm === 1) {
+            cr['name'] = this.toString(creatorRows[ci]['lastName'], '');
+          } else {
+            cr['firstName'] = this.toString(creatorRows[ci]['firstName'], '');
+            cr['lastName'] = this.toString(creatorRows[ci]['lastName'], '');
+          }
+          creators.push(cr);
+        }
+        obj['creators'] = creators;
+      }
+
+      // Tags
+      let tagRows = await this.db.queryAsync(
+        `SELECT t.name, it.type
+         FROM itemTags it JOIN tags t ON t.tagID = it.tagID
+         WHERE it.itemID = ? ORDER BY t.name`,
+        [itemID]
+      );
+      if (tagRows.length > 0) {
+        let tags: Record<string, Object>[] = [];
+        for (let ti2 = 0; ti2 < tagRows.length; ti2++) {
+          tags.push({
+            tag: this.toString(tagRows[ti2]['name'], ''),
+            type: this.toNumber(tagRows[ti2]['type']),
+          });
+        }
+        obj['tags'] = tags;
+      }
+
+      // Collections
+      let colRows = await this.db.queryAsync(
+        `SELECT c.key
+         FROM collectionItems ci
+         JOIN collections c ON c.collectionID = ci.collectionID
+         WHERE ci.itemID = ?
+         ORDER BY c.collectionName`,
+        [itemID]
+      );
+      if (colRows.length > 0) {
+        let cols: string[] = [];
+        for (let ci2 = 0; ci2 < colRows.length; ci2++) {
+          cols.push(this.toString(colRows[ci2]['key'], ''));
+        }
+        obj['collections'] = cols;
+      }
+
+      // Relations
+      let relRows = await this.db.queryAsync(
+        `SELECT i2.key
+         FROM itemRelations r JOIN items i2 ON i2.itemID = r.relatedItemID
+         WHERE r.itemID = ?`,
+        [itemID]
+      );
+      if (relRows.length > 0) {
+        let relKeys: string[] = [];
+        for (let ri = 0; ri < relRows.length; ri++) {
+          relKeys.push(this.toString(relRows[ri]['key'], ''));
+        }
+        obj['relations'] = { 'dc:relation': relKeys };
+      }
+
+      // Subtype tables
+      if (itemType === 'note') {
+        let noteRows = await this.db.queryAsync(
+          `SELECT parentItemID, note, title FROM itemNotes WHERE itemID = ?`,
+          [itemID]
+        );
+        if (noteRows.length > 0) {
+          obj['note'] = this.toString(noteRows[0]['note'], '');
+          let noteTitle = this.toString(noteRows[0]['title'], '');
+          if (noteTitle.length > 0) { obj['title'] = noteTitle; }
+          let parentNoteID = this.toNullableNumber(noteRows[0]['parentItemID']);
+          if (parentNoteID !== null) {
+            let pk = await this.db.valueQueryAsync(
+              `SELECT key FROM items WHERE itemID = ?`, [parentNoteID]
+            );
+            obj['parentItem'] = this.toString(pk, '') || false;
+          }
+        }
+      } else if (itemType === 'attachment') {
+        let attRows = await this.db.queryAsync(
+          `SELECT parentItemID, linkMode, contentType, path, storageHash, storageModTime
+           FROM itemAttachments WHERE itemID = ?`,
+          [itemID]
+        );
+        if (attRows.length > 0) {
+          let lm = this.toNumber(attRows[0]['linkMode']);
+          let linkModeStr = 'imported_file';
+          if (lm === 1) { linkModeStr = 'imported_url'; }
+          else if (lm === 2) { linkModeStr = 'linked_file'; }
+          else if (lm === 3) { linkModeStr = 'linked_url'; }
+          else if (lm === 4) { linkModeStr = 'embedded_image'; }
+          obj['linkMode'] = linkModeStr;
+          obj['contentType'] = this.toString(attRows[0]['contentType'], '');
+          obj['path'] = this.toString(attRows[0]['path'], '');
+          let parentAttID = this.toNullableNumber(attRows[0]['parentItemID']);
+          if (parentAttID !== null) {
+            let pk = await this.db.valueQueryAsync(
+              `SELECT key FROM items WHERE itemID = ?`, [parentAttID]
+            );
+            obj['parentItem'] = this.toString(pk, '') || false;
+          }
+        }
+      } else if (itemType === 'annotation') {
+        let annRows = await this.db.queryAsync(
+          `SELECT annotationID, parentItemID, type, pageIndex, x, y, width, height,
+                  color, text, comment, authorName, sortIndex, dateModified
+           FROM itemAnnotations WHERE parentItemID = ?`,
+          [itemID]
+        );
+        if (annRows.length > 0) {
+          // TODO: full annotation-as-item support; currently output first annotation
+          let ann = annRows[0];
+          obj['annotationType'] = this.toString(ann['type'], 'highlight');
+          obj['annotationText'] = this.toString(ann['text'], '');
+          obj['annotationComment'] = this.toString(ann['comment'], '');
+          obj['annotationColor'] = this.toString(ann['color'], '#FFD700');
+          obj['annotationPageLabel'] = `${this.toNumber(ann['pageIndex'])}`;
+          obj['annotationSortIndex'] = this.toString(ann['sortIndex'], '');
+          obj['annotationPosition'] = JSON.stringify({
+            x: this.toFloat(ann['x']), y: this.toFloat(ann['y']),
+            width: this.toFloat(ann['width']), height: this.toFloat(ann['height']),
+          });
+        }
+      }
+
+      // Deleted / trash flag
+      let delCount = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT COUNT(*) FROM deletedItems WHERE itemID = ?`, [itemID]
+      ));
+      if (delCount > 0) {
+        obj['deleted'] = true;
+      }
+
+      results.push(obj);
+    }
+    return results;
+  }
+
   private async insertStarterItem(title: string, creator: string, itemType: string, date: string, publisher: string, collectionID: number): Promise<void> {
     let typeID = this.toNumber(await this.db.valueQueryAsync(
       `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [itemType]

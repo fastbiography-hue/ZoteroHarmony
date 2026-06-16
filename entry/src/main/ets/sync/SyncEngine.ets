@@ -109,23 +109,80 @@ export class SyncEngine {
   }
 
   // Upload  Ref: syncEngine.js:1020-1166
+  // Uses persistent syncQueue/syncDeleteLog via LibraryRepository.
   private async _startUpload(): Promise<UploadResult> {
+    if (!this.appContext) {
+      // Persistent queue requires appContext to open LibraryRepository.
+      // Without it we have no authoritative upload source.
+      return UploadResult.NOTHING_TO_UPLOAD;
+    }
+
     let lt = this.library.libraryType;
     let ltid = this.library.libraryTypeID;
     let lid = this.library.libraryID;
-    let hasWork = false;
     let objTypes: ObjectType[] = ['collection', 'search', 'item'];
+    let hasWork = false;
 
-    for (let ti = 0; ti < objTypes.length; ti++) {
-      let ot = objTypes[ti];
-      let deleted = await this.state.getDeleted(lid, ot);
-      while (deleted.length > 0) {
-        let batch = deleted.splice(0, 25);
-        await this.apiUpload.uploadDeletions(lt, ltid, this.library.libraryVersion, ot, batch);
-        await this.state.removeFromDeleteLog(lid, ot, batch);
-        hasWork = true;
+    let repo = new LibraryRepository();
+    await repo.open(this.appContext);
+    try {
+      // --- Phase 1: upload deletions ---
+      for (let ti = 0; ti < objTypes.length; ti++) {
+        let ot = objTypes[ti];
+        let deleted = await repo.getDeleted(lid, ot);
+        while (deleted.length > 0) {
+          let batch = deleted.splice(0, 25);
+          let newVersion = await this.apiUpload.uploadDeletions(
+            lt, ltid, this.library.libraryVersion, ot, batch
+          );
+          this.library.libraryVersion = newVersion;
+          await repo.removeFromDeleteLog(lid, ot, batch);
+          hasWork = true;
+        }
       }
+
+      // --- Phase 2: upload upserts ---
+      for (let ti = 0; ti < objTypes.length; ti++) {
+        let ot = objTypes[ti];
+        let queued = await repo.getAllObjectsInQueue(lid, ot);
+        while (queued.length > 0) {
+          let batchKeys = queued.splice(0, 25);
+          let objects = await repo.getObjectsForUpload(lid, ot, batchKeys);
+          if (objects.length === 0) {
+            // Objects deleted locally after being queued — clean up
+            await repo.removeFromSyncQueue(lid, ot, batchKeys);
+            continue;
+          }
+          let response = await this.apiUpload.uploadObjects(
+            lt, ltid, this.library.libraryVersion, ot, objects
+          );
+          this.library.libraryVersion = response.libraryVersion;
+
+          let results = response.results;
+          // Collect keys that were uploaded successfully
+          let successfulKeys: string[] = [];
+          for (let si = 0; si < results.successful.length; si++) {
+            let succ = results.successful[si];
+            let data = succ['data'] ?? succ;
+            let sk = (data['key'] ?? succ['key'] ?? '') as string;
+            if (sk.length > 0) { successfulKeys.push(sk); }
+          }
+          // unchanged keys are already on the server
+          let allDone = successfulKeys.concat(results.unchanged);
+          await repo.removeFromSyncQueue(lid, ot, allDone);
+
+          if (results.failed.length > 0) {
+            // Leave failed keys in the queue for retry
+            hasWork = true;
+            return UploadResult.OBJECT_CONFLICT;
+          }
+          hasWork = true;
+        }
+      }
+    } finally {
+      await repo.close();
     }
+
     return hasWork ? UploadResult.SUCCESS : UploadResult.NOTHING_TO_UPLOAD;
   }
 
