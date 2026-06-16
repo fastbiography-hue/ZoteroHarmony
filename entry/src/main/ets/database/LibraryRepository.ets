@@ -1322,17 +1322,18 @@ export class LibraryRepository {
     let dateAdded = this.remoteString(data, 'dateAdded', '');
     let dateModified = this.remoteString(data, 'dateModified', '');
 
-    // Upsert items row (preserve existing dateAdded on update)
+    // Upsert items row with proper date handling.
+    // Use COALESCE(NULLIF(?, ''), datetime('now')) so that empty-string
+    // parameters fall back to the SQL function, not a literal string.
     if (dateAdded.length === 0) {
       await this.db.executeSql(
         `INSERT OR REPLACE INTO items
          (itemID, itemTypeID, libraryID, key, version, synced, dateModified)
          VALUES (
            COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
-           ?, ?, ?, ?, 1, ?
+           ?, ?, ?, ?, 1, COALESCE(NULLIF(?, ''), datetime('now'))
          )`,
-        [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version,
-         dateModified.length > 0 ? dateModified : 'datetime(\'now\')']
+        [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version, dateModified]
       );
     } else {
       await this.db.executeSql(
@@ -1340,7 +1341,7 @@ export class LibraryRepository {
          (itemID, itemTypeID, libraryID, key, version, synced, dateAdded, dateModified)
          VALUES (
            COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
-           ?, ?, ?, ?, 1, ?, ?
+           ?, ?, ?, ?, 1, ?, COALESCE(NULLIF(?, ''), datetime('now'))
          )`,
         [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version,
          dateAdded, dateModified]
@@ -1354,7 +1355,8 @@ export class LibraryRepository {
       return;
     }
 
-    // itemData: only scalar Zotero item fields
+    // itemData: clean old values, then re-insert scalar Zotero item fields
+    await this.db.executeSql(`DELETE FROM itemData WHERE itemID = ?`, [itemID]);
     await this.putItemField(itemID, 'itemType', itemType);
     let fieldKeys = Object.keys(data);
     for (let i = 0; i < fieldKeys.length; i++) {
@@ -1368,7 +1370,7 @@ export class LibraryRepository {
     await this.upsertRemoteItemCreators(itemID, data, libraryID);
 
     // Tags
-    await this.upsertRemoteItemTags(itemID, data, libraryID);
+    await this.upsertRemoteItemTags(itemID, data);
 
     // Collections
     await this.upsertRemoteItemCollections(itemID, data, libraryID);
@@ -1473,13 +1475,15 @@ export class LibraryRepository {
   private async upsertRemoteItemRelations(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
     let relationMap = data['relations'] as Record<string, string[]> | undefined;
     if (!relationMap) {
+      // No relations field at all — preserve existing relations
       return;
     }
+    // Always clean old relations when the field is present (even if empty)
+    await this.db.executeSql(`DELETE FROM itemRelations WHERE itemID = ?`, [itemID]);
     let relatedKeys = relationMap['dc:relation'] ?? [];
     if (relatedKeys.length === 0) {
       return;
     }
-    await this.db.executeSql(`DELETE FROM itemRelations WHERE itemID = ?`, [itemID]);
     for (let i = 0; i < relatedKeys.length; i++) {
       let relatedID = this.toNumber(await this.db.valueQueryAsync(
         `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`,
@@ -1619,7 +1623,10 @@ export class LibraryRepository {
       `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, parentKey]
     )) : 0;
     let contentType = this.remoteString(data, 'contentType', '');
-    let charset = this.remoteString(data, 'charset', '');
+    // TODO: charset — the current itemAttachments schema uses charsetID (int),
+    // not a text column.  Map charset string → charsetID when a charset lookup
+    // table is added to the schema.
+    let _charset = this.remoteString(data, 'charset', '');
     let path = this.remoteString(data, 'path', this.remoteString(data, 'url', ''));
     let filename = this.remoteString(data, 'filename', '');
     let md5 = this.remoteString(data, 'md5', '');

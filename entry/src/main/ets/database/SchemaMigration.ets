@@ -14,7 +14,7 @@ import { ZoteroDb } from './ZoteroDb.ets';
  * Core Zotero SQLite schema — CREATE TABLE statements.
  * Ref: schema.js:2783-3077  per-step DDL
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const CORE_TABLES: string[] = [
   // Ref: schema.js:2783
@@ -226,20 +226,61 @@ export const CORE_TABLES: string[] = [
 
 /**
  * Run all CREATE TABLE statements against the DB.
- */
-/**
- * Run all CREATE TABLE statements against the DB.
- * Accepts a DB wrapper with executeSql(sql: string): Promise<void>.
+ * Also handles schema migration from older versions.
  */
 export async function migrate(db: ZoteroDb): Promise<void> {
+  // Detect current schema version
+  let currentVersion = await detectSchemaVersion(db);
+
+  // v1 → v2: add creatorTypes table + itemCreators.creatorTypeID column
+  if (currentVersion < 2) {
+    await db.executeSql(
+      `CREATE TABLE IF NOT EXISTS creatorTypes (
+        creatorTypeID INTEGER PRIMARY KEY,
+        creatorType TEXT NOT NULL UNIQUE
+      )`
+    );
+    if (!(await columnExists(db, 'itemCreators', 'creatorTypeID'))) {
+      await db.executeSql(
+        `ALTER TABLE itemCreators ADD COLUMN creatorTypeID INT NOT NULL DEFAULT 1`
+      );
+    }
+  }
+
+  // Always run idempotent DDL
   for (let i = 0; i < CORE_TABLES.length; i++) {
     await db.executeSql(CORE_TABLES[i]);
   }
   await seedCoreMetadata(db);
-  // Record schema version
   await db.executeSql(
     `INSERT OR REPLACE INTO version (schema, version) VALUES ('zotero', ${SCHEMA_VERSION})`
   );
+}
+
+/** Read the current schema version from the version table. */
+async function detectSchemaVersion(db: ZoteroDb): Promise<number> {
+  try {
+    let v = await db.valueQueryAsync(
+      `SELECT version FROM version WHERE schema = 'zotero'`
+    );
+    if (v === null || v === undefined) { return 0; }
+    return typeof v === 'number' ? v : Number.parseInt(`${v}`, 10) || 0;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+/** Check whether a column exists in a table using PRAGMA table_info. */
+async function columnExists(db: ZoteroDb, tableName: string, columnName: string): Promise<boolean> {
+  try {
+    let rows = await db.queryAsync(`PRAGMA table_info(${tableName})`);
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i]['name'] === columnName) { return true; }
+    }
+    return false;
+  } catch (_e) {
+    return false;
+  }
 }
 
 async function seedCoreMetadata(db: ZoteroDb): Promise<void> {
