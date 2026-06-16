@@ -78,10 +78,15 @@ struct MainPage {
   @State newItemDialogVisible: boolean = false;
   @State newItemDialogType: string = 'journalArticle';
   @State newItemDialogTitle: string = '';
+  @State newItemDialogBusy: boolean = false;
+  @State newItemDialogError: string = '';
   // Add by Identifier dialog
   @State identifierDialogVisible: boolean = false;
   @State identifierDialogText: string = '';
   @State identifierDialogError: string = '';
+  @State identifierDialogBusy: boolean = false;
+  // Collection dialog busy
+  @State collectionDialogBusy: boolean = false;
   @StorageLink('zotero_theme') themeMode: string = 'light';
   @State pendingSyncMap: Record<string, boolean> = {};
   @State pendingSyncSummaryText: string = '';
@@ -670,44 +675,78 @@ struct MainPage {
   /** Select and display an item by key (details view, phone view). */
   private async _selectItemByKey(itemKey: string): Promise<void> {
     let repo = new LibraryRepository();
-    await repo.open(getContext(this).getApplicationContext());
-    let item = await repo.getItemByKey(itemKey);
-    await repo.close();
-    if (item) {
-      this.selectedItemKey = itemKey;
-      this.selectedItemKeys = [itemKey];
-      this.currentItem = item;
-      this.selectedView = 'details';
-      this.phoneView = PhoneView.DETAIL;
+    try {
+      await repo.open(getContext(this).getApplicationContext());
+      let item = await repo.getItemByKey(itemKey);
+      if (item) {
+        this.selectedItemKey = itemKey;
+        this.selectedItemKeys = [itemKey];
+        this.currentItem = item;
+        this.selectedView = 'details';
+        this.phoneView = PhoneView.DETAIL;
+      }
+    } finally {
+      await repo.close();
     }
   }
 
-  /** Create a new item from the New Item dialog. */
-  private _createNewItem(): void {
+  /** Select a collection by key in the left tree. */
+  private async _selectCollectionByKey(collectionKey: string): Promise<void> {
+    let repo = new LibraryRepository();
+    try {
+      await repo.open(getContext(this).getApplicationContext());
+      let rows = await repo.listCollectionRows();
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].key === collectionKey) {
+          this.selectedRowID = rows[i].id;
+          break;
+        }
+      }
+    } finally {
+      await repo.close();
+    }
+    this.selectedCollectionKey = collectionKey;
+    this.selectedViewMode = 'collection';
+    this.selectedItemKey = '';
+    this.selectedItemKeys = [];
+    this.currentItem = new ItemModel();
+    this.phoneView = PhoneView.ITEMS;
+  }
+
+  /** Create a new item from the New Item dialog.  Async-safe with busy guard. */
+  private async _createNewItem(): Promise<void> {
+    if (this.newItemDialogBusy) { return; }
+    this.newItemDialogBusy = true;
+    this.newItemDialogError = '';
     let title = this.newItemDialogTitle.trim();
     if (title.length === 0) { title = '(untitled)'; }
     let itemType = this.newItemDialogType;
-    // Determine collection key
     let collectionKey: string | null = null;
     if (this.selectedViewMode === 'collection' && this.selectedCollectionKey.length > 0) {
       collectionKey = this.selectedCollectionKey;
     }
     let repo = new LibraryRepository();
-    repo.open(getContext(this).getApplicationContext()).then(() => {
-      return repo.createItem(collectionKey, itemType, title);
-    }).then((newKey: string) => {
+    try {
+      await repo.open(getContext(this).getApplicationContext());
+      let newKey = await repo.createItem(collectionKey, itemType, title);
+      await repo.close();
       this.newItemDialogVisible = false;
       this.newItemDialogTitle = '';
       this.newItemDialogType = 'journalArticle';
       this.revision++;
       this._refreshPendingSyncState();
-      this._selectItemByKey(newKey);
-      repo.close();
-    }).catch((_err: Error) => { repo.close(); });
+      await this._selectItemByKey(newKey);
+    } catch (_err) {
+      this.newItemDialogError = 'Failed to create item';
+      try { await repo.close(); } catch (_e) {}
+    } finally {
+      this.newItemDialogBusy = false;
+    }
   }
 
-  /** Parse identifier lines and create stub items. */
-  private _addByIdentifier(): void {
+  /** Parse identifier lines and create stub items.  Async-safe with busy guard. */
+  private async _addByIdentifier(): Promise<void> {
+    if (this.identifierDialogBusy) { return; }
     let lines = this.identifierDialogText.split('\n');
     let entries: IdentifierCreateEntry[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -729,38 +768,41 @@ struct MainPage {
       this.identifierDialogError = 'No valid identifiers found';
       return;
     }
+    this.identifierDialogBusy = true;
+    this.identifierDialogError = '';
     let collectionKey: string | null = null;
     if (this.selectedViewMode === 'collection' && this.selectedCollectionKey.length > 0) {
       collectionKey = this.selectedCollectionKey;
     }
     let repo = new LibraryRepository();
-    repo.open(getContext(this).getApplicationContext()).then(() => {
+    try {
+      await repo.open(getContext(this).getApplicationContext());
       let createdKeys: string[] = [];
-      let next = Promise.resolve();
       for (let i = 0; i < entries.length; i++) {
         let e = entries[i];
-        next = next.then(() => {
-          return repo.createItem(collectionKey, e.itemType, e.title);
-        }).then((newKey: string) => {
-          createdKeys.push(newKey);
-          if (e.fieldName === 'extra') {
-            return repo.updateItemField(newKey, e.fieldName, `${e.idType.toUpperCase()}: ${e.value}`);
-          }
-          return repo.updateItemField(newKey, e.fieldName, e.value);
-        });
-      }
-      return next.then(() => {
-        this.identifierDialogVisible = false;
-        this.identifierDialogText = '';
-        this.identifierDialogError = '';
-        this.revision++;
-        this._refreshPendingSyncState();
-        if (createdKeys.length > 0) {
-          this._selectItemByKey(createdKeys[0]);
+        let newKey = await repo.createItem(collectionKey, e.itemType, e.title);
+        createdKeys.push(newKey);
+        if (e.fieldName === 'extra') {
+          await repo.updateItemField(newKey, e.fieldName, `${e.idType.toUpperCase()}: ${e.value}`);
+        } else {
+          await repo.updateItemField(newKey, e.fieldName, e.value);
         }
-        repo.close();
-      });
-    }).catch((_err: Error) => { repo.close(); });
+      }
+      await repo.close();
+      this.identifierDialogVisible = false;
+      this.identifierDialogText = '';
+      this.identifierDialogError = '';
+      this.revision++;
+      this._refreshPendingSyncState();
+      if (createdKeys.length > 0) {
+        await this._selectItemByKey(createdKeys[0]);
+      }
+    } catch (_err) {
+      this.identifierDialogError = 'Failed to add identifier';
+      try { await repo.close(); } catch (_e) {}
+    } finally {
+      this.identifierDialogBusy = false;
+    }
   }
 
   private _doSync(): void {
@@ -887,26 +929,54 @@ struct MainPage {
     }
   }
 
-  private _submitCollectionDialog(): void {
-    let repo = new LibraryRepository();
+  private async _submitCollectionDialog(): Promise<void> {
+    if (this.collectionDialogBusy) { return; }
     let title = this.collectionDialogValue.trim();
     if (title.length === 0) {
       this.collectionDialogError = 'Collection name is required';
       return;
     }
     this.collectionDialogError = '';
-    repo.open(getContext(this).getApplicationContext()).then(() => {
+    this.collectionDialogBusy = true;
+    let repo = new LibraryRepository();
+    try {
+      await repo.open(getContext(this).getApplicationContext());
       if (this.collectionDialogMode === 'rename' && this.collectionDialogTargetKey.length > 0) {
         if (this.collectionDialogTargetType === 'search') {
-          return repo.renameSavedSearch(this.collectionDialogTargetKey, title);
+          await repo.renameSavedSearch(this.collectionDialogTargetKey, title);
+        } else {
+          await repo.renameCollection(this.collectionDialogTargetKey, title);
         }
-        return repo.renameCollection(this.collectionDialogTargetKey, title);
+      } else if (this.collectionDialogMode === 'new-child') {
+        let parentKey = this.collectionDialogTargetKey.length > 0 ? this.collectionDialogTargetKey : null;
+        let newKey = await repo.createCollection(title, parentKey);
+        await repo.close();
+        this.collectionDialogVisible = false;
+        this.collectionDialogMode = '';
+        this.collectionDialogTargetKey = '';
+        this.collectionDialogTargetType = '';
+        this.collectionDialogTitle = '';
+        this.collectionDialogValue = '';
+        this.revision++;
+        this._refreshPendingSyncState();
+        await this._selectCollectionByKey(newKey);
+        return;
+      } else if (this.collectionDialogMode === 'new') {
+        let newKey = await repo.createCollection(title, null);
+        await repo.close();
+        this.collectionDialogVisible = false;
+        this.collectionDialogMode = '';
+        this.collectionDialogTargetKey = '';
+        this.collectionDialogTargetType = '';
+        this.collectionDialogTitle = '';
+        this.collectionDialogValue = '';
+        this.revision++;
+        this._refreshPendingSyncState();
+        await this._selectCollectionByKey(newKey);
+        return;
       }
-      if (this.collectionDialogMode === 'new-child') {
-        return repo.createCollection(title, this.collectionDialogTargetKey.length > 0 ? this.collectionDialogTargetKey : null).then(() => {});
-      }
-      return Promise.resolve();
-    }).then(() => {
+      // rename succeeded
+      await repo.close();
       this.collectionDialogVisible = false;
       this.collectionDialogMode = '';
       this.collectionDialogTargetKey = '';
@@ -915,16 +985,12 @@ struct MainPage {
       this.collectionDialogValue = '';
       this.revision++;
       this._refreshPendingSyncState();
-      repo.close();
-    }).catch((_err: Error) => {
-      this.collectionDialogVisible = false;
-      this.collectionDialogMode = '';
-      this.collectionDialogTargetKey = '';
-      this.collectionDialogTargetType = '';
-      this.collectionDialogTitle = '';
-      this.collectionDialogValue = '';
-      repo.close();
-    });
+    } catch (_err) {
+      this.collectionDialogError = 'Failed to save collection';
+      try { await repo.close(); } catch (_e) {}
+    } finally {
+      this.collectionDialogBusy = false;
+    }
   }
 
   private _commandContext(): ZoteroCommandContext {
