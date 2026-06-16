@@ -54,6 +54,10 @@ export struct ItemPaneView {
   @State attachIsDirty: boolean = false;
   @State attachSaveStatus: 'idle' | 'dirty' | 'success' | 'error' = 'idle';
   @State attachSaveMessage: string = '';
+  @State initialAttachTitle: string = '';
+  @State initialAttachContentType: string = '';
+  @State initialAttachPath: string = '';
+  @State initialAttachUrl: string = '';
   @Watch('_refreshFromStore')
   @StorageLink('zotero_libraryRevision') libraryRevision: number = 0;
   onItemSaved?: () => void;
@@ -66,18 +70,37 @@ export struct ItemPaneView {
     this.abstractText = this.item.itemData.get('abstractNote') ?? '';
     this.tags = [...this.item.tags];
     if (this.item.isAttachment()) {
+      this._clearNoteDraft();
       this._initAttachmentDraft();
     } else if (this.item.isNote()) {
+      this._clearAttachmentDraftStatus();
       this._loadNoteForChild();
     } else {
+      this._clearNoteDraft();
+      this._clearAttachmentDraftStatus();
       this._loadAttachments();
       this._loadNotes();
       this._loadRelated();
     }
   }
 
+  private _clearNoteDraft(): void {
+    this.noteLoaded = false;
+    this.selectedNoteID = 0;
+    this.selectedNoteTitle = '';
+    this.selectedNoteText = '';
+  }
+
+  private _clearAttachmentDraftStatus(): void {
+    this.attachIsDirty = false;
+    this.attachSaveStatus = 'idle';
+    this.attachSaveMessage = '';
+  }
+
   /** If a note child item is selected, auto-load its body. */
   private _loadNoteForChild(): void {
+    // Clear old note state before async load
+    this._clearNoteDraft();
     let noteKey = this.item.key ?? '';
     if (noteKey.length === 0) { return; }
     let repo = new LibraryRepository();
@@ -101,9 +124,38 @@ export struct ItemPaneView {
     this.attachContentType = this.item.attachmentContentType ?? '';
     this.attachPath = this.item.attachmentPath ?? '';
     this.attachUrl = this.item.itemData.get('url') ?? '';
+    this.initialAttachTitle = this.attachTitle;
+    this.initialAttachContentType = this.attachContentType;
+    this.initialAttachPath = this.attachPath;
+    this.initialAttachUrl = this.attachUrl;
     this.attachIsDirty = false;
     this.attachSaveStatus = 'idle';
     this.attachSaveMessage = '';
+  }
+
+  private _updateAttachmentDirty(): void {
+    let dirty =
+      this.attachTitle !== this.initialAttachTitle ||
+      this.attachContentType !== this.initialAttachContentType ||
+      this.attachPath !== this.initialAttachPath ||
+      this.attachUrl !== this.initialAttachUrl;
+    this.attachIsDirty = dirty;
+    if (dirty && this.attachSaveStatus === 'idle') {
+      this.attachSaveStatus = 'dirty';
+    } else if (!dirty && this.attachSaveStatus === 'dirty') {
+      this.attachSaveStatus = 'idle';
+    }
+  }
+
+  /** Pure helper for testability — exported. */
+  static attachmentDraftDirty(
+    initial: { title: string; contentType: string; path: string; url: string },
+    current: { title: string; contentType: string; path: string; url: string }
+  ): boolean {
+    return initial.title !== current.title ||
+      initial.contentType !== current.contentType ||
+      initial.path !== current.path ||
+      initial.url !== current.url;
   }
 
   private reloadContent(): void {
@@ -124,10 +176,10 @@ export struct ItemPaneView {
             this._sectionHeader('ATTACHMENT METADATA')
             this._readOnlyRow('Link Mode', this._linkModeLabel(this.item.attachmentLinkMode))
             this._readOnlyRow('Parent Item', this.item.parentKey ?? '(none)')
-            this._editRow('Title', this.attachTitle, (v: string) => { this.attachTitle = v; this.attachIsDirty = true; })
-            this._editRow('Content Type', this.attachContentType, (v: string) => { this.attachContentType = v; this.attachIsDirty = true; })
-            this._editRow('Path', this.attachPath, (v: string) => { this.attachPath = v; this.attachIsDirty = true; })
-            this._editRow('URL', this.attachUrl, (v: string) => { this.attachUrl = v; this.attachIsDirty = true; })
+            this._editRow('Title', this.attachTitle, (v: string) => { this.attachTitle = v; this._updateAttachmentDirty(); })
+            this._editRow('Content Type', this.attachContentType, (v: string) => { this.attachContentType = v; this._updateAttachmentDirty(); })
+            this._editRow('Path', this.attachPath, (v: string) => { this.attachPath = v; this._updateAttachmentDirty(); })
+            this._editRow('URL', this.attachUrl, (v: string) => { this.attachUrl = v; this._updateAttachmentDirty(); })
             Blank().height(20)
             // Status bar
             Row() {
@@ -431,11 +483,24 @@ export struct ItemPaneView {
         this.attachContentType, this.attachPath, this.attachUrl);
     }).then(() => {
       repo.close();
-      // Update item model in place
+      // Sync ItemModel: title/url match Repository behaviour (write or delete)
+      if (this.attachTitle.length > 0) {
+        this.item.itemData.set('title', this.attachTitle);
+      } else {
+        this.item.itemData.delete('title');
+      }
+      if (this.attachUrl.length > 0) {
+        this.item.itemData.set('url', this.attachUrl);
+      } else {
+        this.item.itemData.delete('url');
+      }
       this.item.attachmentContentType = this.attachContentType;
       this.item.attachmentPath = this.attachPath;
-      this.item.itemData.set('title', this.attachTitle);
-      this.item.itemData.set('url', this.attachUrl);
+      // Update initial snapshots so dirty resets
+      this.initialAttachTitle = this.attachTitle;
+      this.initialAttachContentType = this.attachContentType;
+      this.initialAttachPath = this.attachPath;
+      this.initialAttachUrl = this.attachUrl;
       this.attachIsDirty = false;
       this.attachSaveStatus = 'success';
       this.attachSaveMessage = 'Saved locally, pending sync';

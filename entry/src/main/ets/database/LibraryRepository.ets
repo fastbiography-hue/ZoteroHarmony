@@ -695,21 +695,15 @@ export class LibraryRepository {
       `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
     ));
     if (itemID === 0) { return; }
+    // Guard: only operate on items that actually have an attachment record
+    let attCount = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM itemAttachments WHERE itemID = ?`, [itemID]
+    ));
+    if (attCount === 0) { return; }
     await this.db.executeTransaction(async (): Promise<void> => {
-      // itemData fields
-      if (title.length > 0) {
-        await this.putItemField(itemID, 'title', title);
-      } else {
-        let fieldID = this.toNumber(await this.db.valueQueryAsync(
-          `SELECT fieldID FROM fields WHERE fieldName = 'title'`
-        ));
-        if (fieldID > 0) {
-          await this.db.executeSql(`DELETE FROM itemData WHERE itemID = ? AND fieldID = ?`, [itemID, fieldID]);
-        }
-      }
-      if (url.length > 0) {
-        await this.putItemField(itemID, 'url', url);
-      }
+      // itemData: title + url (write or delete accordingly)
+      await this.putOrDeleteItemField(itemID, 'title', title);
+      await this.putOrDeleteItemField(itemID, 'url', url);
       // itemAttachments
       await this.db.executeSql(
         `UPDATE itemAttachments SET contentType = ?, path = ?
@@ -723,6 +717,33 @@ export class LibraryRepository {
       );
     });
     await this.addToSyncQueue(1, 'item', [itemKey]);
+  }
+
+  /**
+   * Write a scalar field value, or delete the itemData row if value is empty.
+   * Used by both updateItemField and updateAttachmentMetadataByKey.
+   */
+  private async putOrDeleteItemField(itemID: number, fieldName: string, value: string): Promise<void> {
+    let fieldID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT fieldID FROM fields WHERE fieldName = ?`, [fieldName]
+    ));
+    if (fieldID === 0) { return; }
+    if (value.length > 0) {
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO itemDataValues (value) VALUES (?)`, [value]
+      );
+      let valueID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT valueID FROM itemDataValues WHERE value = ?`, [value]
+      ));
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemData (itemID, fieldID, valueID) VALUES (?, ?, ?)`,
+        [itemID, fieldID, valueID]
+      );
+    } else {
+      await this.db.executeSql(
+        `DELETE FROM itemData WHERE itemID = ? AND fieldID = ?`, [itemID, fieldID]
+      );
+    }
   }
 
   async createLinkedUrlAttachment(parentItemKey: string, url: string): Promise<string> {
