@@ -659,13 +659,14 @@ export struct ItemPaneView {
     let repo = new LibraryRepository();
     repo.open(getContext(this).getApplicationContext()).then(() => {
       return repo.createNote(itemKey, 'New Note', '');
-    }).then((noteKey: string) => {
+    }).then((noteKey: string): Promise<void> => {
       if (noteKey.length > 0) {
-        return repo.listNotes(itemKey).then((notes: NoteEntry[]) => {
+        return repo.listNotes(itemKey).then((notes: NoteEntry[]): void => {
           this.notes = notes;
           this._selectNoteByKey(noteKey);
         });
       }
+      return Promise.resolve();
     }).catch((_err: Error) => {
     }).finally(() => {
       repo.close();

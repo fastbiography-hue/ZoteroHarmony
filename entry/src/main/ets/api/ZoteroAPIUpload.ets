@@ -10,6 +10,7 @@
 import { http } from '@kit.NetworkKit';
 import { HttpClient } from './HttpClient.ets';
 import { LibraryType, ObjectType, UploadResponse, UploadResults } from './ZoteroAPITypes.ets';
+import { UploadObjectBase } from '../database/LibraryRepository.ets';
 
 const PLURAL: Record<ObjectType, string> = {
   'item': 'items', 'collection': 'collections', 'search': 'searches',
@@ -29,7 +30,7 @@ export class ZoteroAPIUpload {
   async uploadObjects(
     libraryType: LibraryType, libraryTypeID: number,
     libraryVersion: number, objectType: ObjectType,
-    objects: Record<string, Object>[]
+    objects: UploadObjectBase[]
   ): Promise<UploadResponse> {
     let target = PLURAL[objectType];
     let path = `/${libraryType}s/${libraryTypeID}/${target}`;

@@ -29,6 +29,8 @@ interface FieldDraft {
   dirty: boolean;
 }
 
+const PUBLICATION_FIELDS: string[] = ['date', 'DOI', 'url', 'publicationTitle', 'volume', 'issue', 'pages'];
+
 /**
  * Main item detail form — draft → explicit Save → DB + syncQueue.
  * Ref: elements/itemDetails.js
@@ -167,14 +169,13 @@ export struct ItemDetailsForm {
           // ---- Publication section ----
           this._sectionHeader('PUBLICATION')
 
-          let pubFields = ['date', 'DOI', 'url', 'publicationTitle', 'volume', 'issue', 'pages'];
-          for (let pi = 0; pi < pubFields.length; pi++) {
+          ForEach(PUBLICATION_FIELDS, (fieldName: string) => {
             FieldEditor({
-              fieldName: pubFields[pi],
-              fieldValue: this._draftVal(pubFields[pi]),
-              onChange: (v: string) => { this._setField(pubFields[pi], v); },
+              fieldName: fieldName,
+              fieldValue: this._draftVal(fieldName),
+              onChange: (v: string) => { this._setField(fieldName, v); },
             })
-          }
+          }, (fieldName: string): string => fieldName)
 
           // ---- Extra section ----
           this._sectionHeader('EXTRA')

@@ -57,8 +57,7 @@ export struct ItemTreeToolbar {
   _columnsMenu() {
     Column() {
       ForEach(DEFAULT_COLUMNS, (column: ItemTreeColumn) => {
-        let visible = this.columns.findIndex((item: ItemTreeColumn) => item.dataKey === column.dataKey) >= 0;
-        Button(`${visible ? '✓ ' : '  '}${column.label}`)
+        Button(`${this._isColumnVisible(column.dataKey) ? '✓ ' : '  '}${column.label}`)
           .fontSize(13)
           .height(34)
           .width('100%')
@@ -95,6 +94,10 @@ export struct ItemTreeToolbar {
     }
     .padding(6)
     .backgroundColor(this.themeMode === 'dark' ? '#1B2028' : '#FFFFFF')
+  }
+
+  private _isColumnVisible(dataKey: string): boolean {
+    return this.columns.findIndex((item: ItemTreeColumn): boolean => item.dataKey === dataKey) >= 0;
   }
 
   private _sortLabel(): string {

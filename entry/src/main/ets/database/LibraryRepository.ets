@@ -40,15 +40,93 @@ export class NoteByKeyResult {
   noteText: string = '';
 }
 
-export interface PendingSyncSummary {
-  queueCount: number;
-  deleteCount: number;
-  itemQueueCount: number;
-  collectionQueueCount: number;
-  searchQueueCount: number;
-  itemDeleteCount: number;
-  collectionDeleteCount: number;
-  searchDeleteCount: number;
+// ==================================================================
+// Upload object classes — explicit types for ArkTS object literals
+// ==================================================================
+
+export class UploadObjectBase {
+  key: string = '';
+  version: number = 0;
+}
+
+export class UploadCollectionObject extends UploadObjectBase {
+  name: string = '';
+  parentCollection: string | boolean = false;
+}
+
+export class UploadSearchConditionObject {
+  condition: string = '';
+  operator: string = '';
+  value: string = '';
+  required: boolean = false;
+}
+
+export class UploadSearchObject extends UploadObjectBase {
+  name: string = '';
+  conditions: UploadSearchConditionObject[] = [];
+}
+
+export class UploadCreatorObject {
+  creatorType: string = '';
+  firstName: string = '';
+  lastName: string = '';
+  name: string = '';
+}
+
+export class UploadTagObject {
+  tag: string = '';
+  type: number = 0;
+}
+
+export class UploadItemObject extends UploadObjectBase {
+  itemType: string = '';
+  title: string = '';
+  abstractNote: string = '';
+  date: string = '';
+  DOI: string = '';
+  ISBN: string = '';
+  ISSN: string = '';
+  url: string = '';
+  publicationTitle: string = '';
+  volume: string = '';
+  issue: string = '';
+  pages: string = '';
+  extra: string = '';
+  note: string = '';
+  parentItem: string | boolean = false;
+  linkMode: string = '';
+  contentType: string = '';
+  path: string = '';
+  annotationType: string = '';
+  annotationText: string = '';
+  annotationComment: string = '';
+  annotationColor: string = '';
+  annotationPageLabel: string = '';
+  annotationSortIndex: string = '';
+  annotationPosition: string = '';
+  creators: UploadCreatorObject[] = [];
+  tags: UploadTagObject[] = [];
+  collections: string[] = [];
+  relationKeys: string[] = [];
+  deleted: boolean = false;
+}
+
+export class AnnotationPositionData {
+  x: number = 0;
+  y: number = 0;
+  width: number = 0;
+  height: number = 0;
+}
+
+export class PendingSyncSummary {
+  queueCount: number = 0;
+  deleteCount: number = 0;
+  itemQueueCount: number = 0;
+  collectionQueueCount: number = 0;
+  searchQueueCount: number = 0;
+  itemDeleteCount: number = 0;
+  collectionDeleteCount: number = 0;
+  searchDeleteCount: number = 0;
 }
 
 /** Lightweight child-row summary for item-tree hierarchy. */
@@ -1674,11 +1752,7 @@ export class LibraryRepository {
 
   /** Return counts by objectType for syncQueue and syncDeleteLog. */
   async getPendingSyncSummary(libraryID: number = 1): Promise<PendingSyncSummary> {
-    let summary: PendingSyncSummary = {
-      queueCount: 0, deleteCount: 0,
-      itemQueueCount: 0, collectionQueueCount: 0, searchQueueCount: 0,
-      itemDeleteCount: 0, collectionDeleteCount: 0, searchDeleteCount: 0,
-    };
+    let summary = new PendingSyncSummary();
     let qRows = await this.db.queryAsync(
       `SELECT objectType, COUNT(*) AS cnt FROM syncQueue WHERE libraryID = ? GROUP BY objectType`,
       [libraryID]
@@ -1711,7 +1785,7 @@ export class LibraryRepository {
   // ==================================================================
 
   /** Dispatch to type-specific serializer.  Does NOT touch syncQueue. */
-  async getObjectsForUpload(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<Record<string, Object>[]> {
+  async getObjectsForUpload(libraryID: number, objectType: RemoteObjectType, keys: string[]): Promise<UploadObjectBase[]> {
     if (keys.length === 0) { return []; }
     if (objectType === 'collection') {
       return this.getCollectionsForUpload(libraryID, keys);
@@ -1722,8 +1796,8 @@ export class LibraryRepository {
     return this.getItemsForUpload(libraryID, keys);
   }
 
-  private async getCollectionsForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
-    let results: Record<string, Object>[] = [];
+  private async getCollectionsForUpload(libraryID: number, keys: string[]): Promise<UploadObjectBase[]> {
+    let results: UploadObjectBase[] = [];
     for (let i = 0; i < keys.length; i++) {
       let rows = await this.db.queryAsync(
         `SELECT collectionID, collectionName, parentCollectionID, key, version
@@ -1731,24 +1805,26 @@ export class LibraryRepository {
         [libraryID, keys[i]]
       );
       if (rows.length === 0) { continue; }
-      let name = this.toString(rows[0]['collectionName'], 'Untitled');
-      let version = this.toNumber(rows[0]['version']);
+      let obj = new UploadCollectionObject();
+      obj.key = keys[i];
+      obj.version = this.toNumber(rows[0]['version']);
+      obj.name = this.toString(rows[0]['collectionName'], 'Untitled');
       let parentID = this.toNullableNumber(rows[0]['parentCollectionID']);
-      let parentKey: string | boolean = false;
+      obj.parentCollection = false;
       if (parentID !== null) {
         let pk = await this.db.valueQueryAsync(
           `SELECT key FROM collections WHERE collectionID = ?`, [parentID]
         );
-        parentKey = this.toString(pk, '');
-        if ((parentKey as string).length === 0) { parentKey = false; }
+        let pkStr = this.toString(pk, '');
+        obj.parentCollection = pkStr.length > 0 ? pkStr : false;
       }
-      results.push({ key: keys[i], version, name, parentCollection: parentKey });
+      results.push(obj);
     }
     return results;
   }
 
-  private async getSearchesForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
-    let results: Record<string, Object>[] = [];
+  private async getSearchesForUpload(libraryID: number, keys: string[]): Promise<UploadObjectBase[]> {
+    let results: UploadObjectBase[] = [];
     for (let i = 0; i < keys.length; i++) {
       let rows = await this.db.queryAsync(
         `SELECT savedSearchID, savedSearchName, key, version
@@ -1756,30 +1832,46 @@ export class LibraryRepository {
         [libraryID, keys[i]]
       );
       if (rows.length === 0) { continue; }
-      let name = this.toString(rows[0]['savedSearchName'], 'Saved Search');
-      let version = this.toNumber(rows[0]['version']);
+      let obj = new UploadSearchObject();
+      obj.key = keys[i];
+      obj.version = this.toNumber(rows[0]['version']);
+      obj.name = this.toString(rows[0]['savedSearchName'], 'Saved Search');
       let savedSearchID = this.toNumber(rows[0]['savedSearchID']);
       let condRows = await this.db.queryAsync(
         `SELECT condition, operator, value, required
          FROM savedSearchConditions WHERE savedSearchID = ? ORDER BY searchConditionID`,
         [savedSearchID]
       );
-      let conditions: Record<string, Object>[] = [];
       for (let c = 0; c < condRows.length; c++) {
-        conditions.push({
-          condition: this.toString(condRows[c]['condition'], ''),
-          operator: this.toString(condRows[c]['operator'], ''),
-          value: this.toString(condRows[c]['value'], ''),
-          required: this.toNumber(condRows[c]['required']) > 0,
-        });
+        let cond = new UploadSearchConditionObject();
+        cond.condition = this.toString(condRows[c]['condition'], '');
+        cond.operator = this.toString(condRows[c]['operator'], '');
+        cond.value = this.toString(condRows[c]['value'], '');
+        cond.required = this.toNumber(condRows[c]['required']) > 0;
+        obj.conditions.push(cond);
       }
-      results.push({ key: keys[i], version, name, conditions });
+      results.push(obj);
     }
     return results;
   }
 
-  private async getItemsForUpload(libraryID: number, keys: string[]): Promise<Record<string, Object>[]> {
-    let results: Record<string, Object>[] = [];
+  private setUploadScalarField(obj: UploadItemObject, fieldName: string, value: string): void {
+    if (fieldName === 'title') { obj.title = value; }
+    else if (fieldName === 'abstractNote') { obj.abstractNote = value; }
+    else if (fieldName === 'date') { obj.date = value; }
+    else if (fieldName === 'DOI') { obj.DOI = value; }
+    else if (fieldName === 'ISBN') { obj.ISBN = value; }
+    else if (fieldName === 'ISSN') { obj.ISSN = value; }
+    else if (fieldName === 'url') { obj.url = value; }
+    else if (fieldName === 'publicationTitle') { obj.publicationTitle = value; }
+    else if (fieldName === 'volume') { obj.volume = value; }
+    else if (fieldName === 'issue') { obj.issue = value; }
+    else if (fieldName === 'pages') { obj.pages = value; }
+    else if (fieldName === 'extra') { obj.extra = value; }
+  }
+
+  private async getItemsForUpload(libraryID: number, keys: string[]): Promise<UploadObjectBase[]> {
+    let results: UploadObjectBase[] = [];
     for (let ki = 0; ki < keys.length; ki++) {
       let itemKey = keys[ki];
       let itemRows = await this.db.queryAsync(
@@ -1794,11 +1886,12 @@ export class LibraryRepository {
       let itemID = this.toNumber(itemRows[0]['itemID']);
       let itemType = this.toString(itemRows[0]['itemType'], 'journalArticle');
       let version = this.toNumber(itemRows[0]['version']);
-      let obj: Record<string, Object> = {
-        key: itemKey, version, itemType,
-      };
+      let obj = new UploadItemObject();
+      obj.key = itemKey;
+      obj.version = version;
+      obj.itemType = itemType;
 
-      // Scalar fields (top-level, per Zotero API)
+      // Scalar fields
       let fieldRows = await this.db.queryAsync(
         `SELECT f.fieldName, v.value
          FROM itemData d
@@ -1809,11 +1902,10 @@ export class LibraryRepository {
       );
       for (let fi = 0; fi < fieldRows.length; fi++) {
         let fieldName = this.toString(fieldRows[fi]['fieldName'], '');
-        // Skip structural pseudo-fields stored in itemData for convenience
         if (fieldName === 'itemType' || fieldName === 'creator' || fieldName === 'note') {
           continue;
         }
-        obj[fieldName] = this.toString(fieldRows[fi]['value'], '');
+        this.setUploadScalarField(obj, fieldName, this.toString(fieldRows[fi]['value'], ''));
       }
 
       // Creators
@@ -1827,21 +1919,18 @@ export class LibraryRepository {
         [itemID]
       );
       if (creatorRows.length > 0) {
-        let creators: Record<string, Object>[] = [];
         for (let ci = 0; ci < creatorRows.length; ci++) {
-          let cr: Record<string, Object> = {
-            creatorType: this.toString(creatorRows[ci]['creatorType'], 'author'),
-          };
+          let cr = new UploadCreatorObject();
+          cr.creatorType = this.toString(creatorRows[ci]['creatorType'], 'author');
           let fm = this.toNumber(creatorRows[ci]['fieldMode']);
           if (fm === 1) {
-            cr['name'] = this.toString(creatorRows[ci]['lastName'], '');
+            cr.name = this.toString(creatorRows[ci]['lastName'], '');
           } else {
-            cr['firstName'] = this.toString(creatorRows[ci]['firstName'], '');
-            cr['lastName'] = this.toString(creatorRows[ci]['lastName'], '');
+            cr.firstName = this.toString(creatorRows[ci]['firstName'], '');
+            cr.lastName = this.toString(creatorRows[ci]['lastName'], '');
           }
-          creators.push(cr);
+          obj.creators.push(cr);
         }
-        obj['creators'] = creators;
       }
 
       // Tags
@@ -1852,14 +1941,12 @@ export class LibraryRepository {
         [itemID]
       );
       if (tagRows.length > 0) {
-        let tags: Record<string, Object>[] = [];
         for (let ti2 = 0; ti2 < tagRows.length; ti2++) {
-          tags.push({
-            tag: this.toString(tagRows[ti2]['name'], ''),
-            type: this.toNumber(tagRows[ti2]['type']),
-          });
+          let tagObj = new UploadTagObject();
+          tagObj.tag = this.toString(tagRows[ti2]['name'], '');
+          tagObj.type = this.toNumber(tagRows[ti2]['type']);
+          obj.tags.push(tagObj);
         }
-        obj['tags'] = tags;
       }
 
       // Collections
@@ -1872,11 +1959,9 @@ export class LibraryRepository {
         [itemID]
       );
       if (colRows.length > 0) {
-        let cols: string[] = [];
         for (let ci2 = 0; ci2 < colRows.length; ci2++) {
-          cols.push(this.toString(colRows[ci2]['key'], ''));
+          obj.collections.push(this.toString(colRows[ci2]['key'], ''));
         }
-        obj['collections'] = cols;
       }
 
       // Relations
@@ -1887,11 +1972,9 @@ export class LibraryRepository {
         [itemID]
       );
       if (relRows.length > 0) {
-        let relKeys: string[] = [];
         for (let ri = 0; ri < relRows.length; ri++) {
-          relKeys.push(this.toString(relRows[ri]['key'], ''));
+          obj.relationKeys.push(this.toString(relRows[ri]['key'], ''));
         }
-        obj['relations'] = { 'dc:relation': relKeys };
       }
 
       // Subtype tables
@@ -1901,15 +1984,16 @@ export class LibraryRepository {
           [itemID]
         );
         if (noteRows.length > 0) {
-          obj['note'] = this.toString(noteRows[0]['note'], '');
+          obj.note = this.toString(noteRows[0]['note'], '');
           let noteTitle = this.toString(noteRows[0]['title'], '');
-          if (noteTitle.length > 0) { obj['title'] = noteTitle; }
+          if (noteTitle.length > 0) { obj.title = noteTitle; }
           let parentNoteID = this.toNullableNumber(noteRows[0]['parentItemID']);
           if (parentNoteID !== null) {
             let pk = await this.db.valueQueryAsync(
               `SELECT key FROM items WHERE itemID = ?`, [parentNoteID]
             );
-            obj['parentItem'] = this.toString(pk, '') || false;
+            let pkStr = this.toString(pk, '');
+            obj.parentItem = pkStr.length > 0 ? pkStr : false;
           }
         }
       } else if (itemType === 'attachment') {
@@ -1920,25 +2004,23 @@ export class LibraryRepository {
         );
         if (attRows.length > 0) {
           let lm = this.toNumber(attRows[0]['linkMode']);
-          let linkModeStr = 'imported_file';
-          if (lm === 1) { linkModeStr = 'imported_url'; }
-          else if (lm === 2) { linkModeStr = 'linked_file'; }
-          else if (lm === 3) { linkModeStr = 'linked_url'; }
-          else if (lm === 4) { linkModeStr = 'embedded_image'; }
-          obj['linkMode'] = linkModeStr;
-          obj['contentType'] = this.toString(attRows[0]['contentType'], '');
-          obj['path'] = this.toString(attRows[0]['path'], '');
+          if (lm === 1) { obj.linkMode = 'imported_url'; }
+          else if (lm === 2) { obj.linkMode = 'linked_file'; }
+          else if (lm === 3) { obj.linkMode = 'linked_url'; }
+          else if (lm === 4) { obj.linkMode = 'embedded_image'; }
+          else { obj.linkMode = 'imported_file'; }
+          obj.contentType = this.toString(attRows[0]['contentType'], '');
+          obj.path = this.toString(attRows[0]['path'], '');
           let parentAttID = this.toNullableNumber(attRows[0]['parentItemID']);
           if (parentAttID !== null) {
             let pk = await this.db.valueQueryAsync(
               `SELECT key FROM items WHERE itemID = ?`, [parentAttID]
             );
-            obj['parentItem'] = this.toString(pk, '') || false;
+            let pkStr = this.toString(pk, '');
+            obj.parentItem = pkStr.length > 0 ? pkStr : false;
           }
         }
       } else if (itemType === 'annotation') {
-        // Query by annotationID (the item's key), NOT by parentItemID.
-        // itemAnnotations.annotationID is the annotation item's key.
         let annRows = await this.db.queryAsync(
           `SELECT annotationID, parentItemID, type, pageIndex, x, y, width, height,
                   color, text, comment, authorName, sortIndex, dateModified
@@ -1947,29 +2029,27 @@ export class LibraryRepository {
         );
         if (annRows.length > 0) {
           let ann = annRows[0];
-          obj['annotationType'] = this.toString(ann['type'], 'highlight');
-          obj['annotationText'] = this.toString(ann['text'], '');
-          obj['annotationComment'] = this.toString(ann['comment'], '');
-          obj['annotationColor'] = this.toString(ann['color'], '#FFD700');
-          obj['annotationPageLabel'] = `${this.toNumber(ann['pageIndex'])}`;
-          obj['annotationSortIndex'] = this.toString(ann['sortIndex'], '');
-          obj['annotationPosition'] = JSON.stringify({
-            x: this.toFloat(ann['x']), y: this.toFloat(ann['y']),
-            width: this.toFloat(ann['width']), height: this.toFloat(ann['height']),
-          });
-          // Resolve parentItem key
+          obj.annotationType = this.toString(ann['type'], 'highlight');
+          obj.annotationText = this.toString(ann['text'], '');
+          obj.annotationComment = this.toString(ann['comment'], '');
+          obj.annotationColor = this.toString(ann['color'], '#FFD700');
+          obj.annotationPageLabel = `${this.toNumber(ann['pageIndex'])}`;
+          obj.annotationSortIndex = this.toString(ann['sortIndex'], '');
+          let posData = new AnnotationPositionData();
+          posData.x = this.toFloat(ann['x']);
+          posData.y = this.toFloat(ann['y']);
+          posData.width = this.toFloat(ann['width']);
+          posData.height = this.toFloat(ann['height']);
+          obj.annotationPosition = JSON.stringify(posData);
           let parentAnnID = this.toNullableNumber(ann['parentItemID']);
           if (parentAnnID !== null) {
             let pk = await this.db.valueQueryAsync(
               `SELECT key FROM items WHERE itemID = ?`, [parentAnnID]
             );
-            obj['parentItem'] = this.toString(pk, '') || false;
+            let pkStr = this.toString(pk, '');
+            obj.parentItem = pkStr.length > 0 ? pkStr : false;
           }
         }
-        // TODO: when saveAnnotation() creates first-class annotation items
-        // in the items table, this path will produce full annotation JSON.
-        // Currently, saveAnnotation() still writes via parent attachment,
-        // so annotation items may not have an itemAnnotations row.
       }
 
       // Deleted / trash flag
@@ -1977,7 +2057,7 @@ export class LibraryRepository {
         `SELECT COUNT(*) FROM deletedItems WHERE itemID = ?`, [itemID]
       ));
       if (delCount > 0) {
-        obj['deleted'] = true;
+        obj.deleted = true;
       }
 
       results.push(obj);
@@ -2363,12 +2443,11 @@ export class LibraryRepository {
     );
   }
 
-  /** Parse Zotero annotationPosition JSON string → {x,y,width,height}. */
-  private parseAnnotationPosition(pos: string): { x: number; y: number; width: number; height: number } {
-    let result = { x: 0, y: 0, width: 0, height: 0 };
+  /** Parse Zotero annotationPosition JSON string → AnnotationPositionData. */
+  private parseAnnotationPosition(pos: string): AnnotationPositionData {
+    let result = new AnnotationPositionData();
     if (pos.length === 0) { return result; }
     try {
-      // Simple JSON parsing without eval — extract numbers via regex
       let xm = pos.match(/"x"\s*:\s*(-?\d+\.?\d*)/);
       let ym = pos.match(/"y"\s*:\s*(-?\d+\.?\d*)/);
       let wm = pos.match(/"width"\s*:\s*(-?\d+\.?\d*)/);
