@@ -3,6 +3,7 @@ oh_modules/
 .cxx/
 .hvigor/
 **/build/
+.bitfun/
 .preview/
 *.p12
 *.p7b

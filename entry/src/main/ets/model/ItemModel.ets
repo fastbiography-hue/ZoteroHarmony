@@ -26,6 +26,9 @@ import {
 export class ItemModel extends DataObject {
   // ---- Type (ref: item.js:40) ----
   private _itemTypeID: number | null = null;
+  /** Zotero API itemType string (e.g. 'journalArticle', 'book', 'note', 'attachment').
+   *  Set by fromJSON.  Used by isRegularItem() when _itemTypeID is not available. */
+  private _itemTypeName: string | null = null;
 
   // ---- Creators (ref: item.js:55-57) ----
   private _creators: ZoteroCreator[] = [];
@@ -70,6 +73,8 @@ export class ItemModel extends DataObject {
 
   get itemTypeID(): number | null { return this._itemTypeID; }
   set itemTypeID(value: number | null) { this._itemTypeID = value; }
+  get itemTypeName(): string | null { return this._itemTypeName; }
+  set itemTypeName(value: string | null) { this._itemTypeName = value; }
   get itemData(): Map<string, string> { return this._itemData; }
   get creators(): ZoteroCreator[] { return this._creators; }
   get noteText(): string | null { return this._noteText; }
@@ -82,11 +87,27 @@ export class ItemModel extends DataObject {
   set attachmentPath(value: string | null) { this._attachmentPath = value; }
   get attachmentContentType(): string | null { return this._attachmentContentType; }
   set attachmentContentType(value: string | null) { this._attachmentContentType = value; }
+  get attachmentCharset(): string | null { return this._attachmentCharset; }
+  set attachmentCharset(value: string | null) { this._attachmentCharset = value; }
+  get attachmentSyncedHash(): string | null { return this._attachmentSyncedHash; }
+  set attachmentSyncedHash(value: string | null) { this._attachmentSyncedHash = value; }
+  get attachmentSyncedModificationTime(): number | null { return this._attachmentSyncedModificationTime; }
+  set attachmentSyncedModificationTime(value: number | null) { this._attachmentSyncedModificationTime = value; }
   get annotationType(): AnnotationTypeEnum | null { return this._annotationType; }
+  get annotationAuthorName(): string | null { return this._annotationAuthorName; }
+  set annotationAuthorName(value: string | null) { this._annotationAuthorName = value; }
   get annotationComment(): string | null { return this._annotationComment; }
   set annotationComment(value: string | null) { this._annotationComment = value; }
   get annotationText(): string | null { return this._annotationText; }
   set annotationText(value: string | null) { this._annotationText = value; }
+  get annotationColor(): string | null { return this._annotationColor; }
+  set annotationColor(value: string | null) { this._annotationColor = value; }
+  get annotationPageLabel(): string | null { return this._annotationPageLabel; }
+  set annotationPageLabel(value: string | null) { this._annotationPageLabel = value; }
+  get annotationSortIndex(): string | null { return this._annotationSortIndex; }
+  set annotationSortIndex(value: string | null) { this._annotationSortIndex = value; }
+  get annotationPosition(): string | null { return this._annotationPosition; }
+  set annotationPosition(value: string | null) { this._annotationPosition = value; }
   get tags(): ZoteroTag[] { return this._tags; }
   set tags(value: ZoteroTag[]) { this._tags = value; }
   get collectionKeys(): string[] { return this._collectionKeys; }
@@ -96,7 +117,16 @@ export class ItemModel extends DataObject {
   // ==================================================================
 
   isRegularItem(): boolean {
-    return this._itemTypeID !== null;
+    // DB-backed item: check integer ID
+    if (this._itemTypeID !== null) {
+      return true;
+    }
+    // API-deserialized item (no DB ID): check itemTypeName against special types
+    if (this._itemTypeName === null || this._itemTypeName.length === 0) {
+      return false;
+    }
+    let lower = this._itemTypeName.toLowerCase();
+    return lower !== 'note' && lower !== 'attachment' && lower !== 'annotation';
   }
 
   isNote(): boolean {
@@ -119,7 +149,7 @@ export class ItemModel extends DataObject {
     let obj: ItemJSON = {
       key: this.key,
       version: this.version,
-      itemType: '',  // populated by ItemFieldsMeta
+      itemType: this._itemTypeName ?? this.itemData.get('itemType') ?? '',
     };
 
     // Fields from _itemData (ref: item.js:5737-5742)
@@ -210,9 +240,10 @@ export class ItemModel extends DataObject {
     let dm = this._str(src, 'dateModified');
     if (dm !== null) { this.dateModified = dm; }
 
-    // 3. Item type — store in itemData for downstream consumers
+    // 3. Item type — store in _itemTypeName (primary) and itemData (fallback)
     let itemType = this._str(src, 'itemType');
     if (itemType !== null && itemType.length > 0) {
+      this._itemTypeName = itemType;
       this.itemData.set('itemType', itemType);
     }
 
