@@ -47,6 +47,7 @@ export struct ItemPaneView {
   @State selectedNoteText: string = '';
   @Watch('_refreshFromStore')
   @StorageLink('zotero_libraryRevision') libraryRevision: number = 0;
+  onItemSaved?: () => void;
 
   aboutToAppear(): void {
     this._reload();
@@ -104,6 +105,7 @@ export struct ItemPaneView {
             Column() {
               ItemDetailsForm({
                 item: this.item,
+                onItemSaved: this.onItemSaved,
               })
               AbstractEditor({
                 text: this.abstractText,

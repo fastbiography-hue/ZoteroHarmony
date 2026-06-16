@@ -844,12 +844,43 @@ export class LibraryRepository {
     if (itemID === 0) {
       return;
     }
-    await this.putItemField(itemID, fieldName, value);
+    if (value.length === 0) {
+      // Delete the field entry
+      let fieldID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT fieldID FROM fields WHERE fieldName = ?`, [fieldName]
+      ));
+      if (fieldID > 0) {
+        await this.db.executeSql(
+          `DELETE FROM itemData WHERE itemID = ? AND fieldID = ?`, [itemID, fieldID]
+        );
+      }
+    } else {
+      await this.putItemField(itemID, fieldName, value);
+    }
     await this.db.executeSql(
       `UPDATE items SET synced = 0, clientDateModified = datetime('now'), dateModified = datetime('now')
        WHERE itemID = ?`,
       [itemID]
     );
+    await this.addToSyncQueue(1, 'item', [itemKey]);
+  }
+
+  /** Change an item's type (updates itemTypeID + itemData['itemType']). */
+  async updateItemTypeByKey(itemKey: string, newItemType: string): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) { return; }
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [newItemType]
+    ));
+    if (typeID === 0) { typeID = 1; }
+    await this.db.executeSql(
+      `UPDATE items SET itemTypeID = ?, synced = 0, clientDateModified = datetime('now'),
+       dateModified = datetime('now') WHERE itemID = ?`,
+      [typeID, itemID]
+    );
+    await this.putItemField(itemID, 'itemType', newItemType);
     await this.addToSyncQueue(1, 'item', [itemKey]);
   }
 

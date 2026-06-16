@@ -358,6 +358,7 @@ struct MainPage {
           ItemPaneView({
             item: $currentItem,
             selectedView: $selectedView,
+            onItemSaved: () => { this._onItemSaved(); },
           })
           .layoutWeight(1)
         }
@@ -438,6 +439,20 @@ struct MainPage {
     }
     .width('100%').height('100%')
     .backgroundColor(this.themeMode === 'dark' ? '#11151B' : ZHColor.SURFACE)
+  }
+
+  private _onItemSaved(): void {
+    this.revision++;
+    // Refresh currentItem from DB to pick up changes from the save
+    let itemKey = this.currentItem.key ?? '';
+    if (itemKey.length === 0) { return; }
+    let repo = new LibraryRepository();
+    repo.open(getContext(this).getApplicationContext()).then(() => {
+      return repo.getItemByKey(itemKey);
+    }).then((refreshed: ItemModel | null) => {
+      if (refreshed) { this.currentItem = refreshed; }
+      repo.close();
+    }).catch((_err: Error) => { repo.close(); });
   }
 
   private _doSync(): void {
