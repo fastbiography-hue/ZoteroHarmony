@@ -12,9 +12,105 @@ import { ItemTreeColumn, DEFAULT_COLUMNS } from '../table/ItemTreeColumns.ets';
 import { AppStore } from '../../utils/AppStore.ets';
 import { Preferences, PrefKey } from '../../utils/Preferences.ets';
 import { ZHColor, ZHMetric } from '../../theme/ThemeConstants.ets';
-import { LibraryRepository } from '../../database/LibraryRepository.ets';
+import { LibraryRepository, ItemChildSummary } from '../../database/LibraryRepository.ets';
 import { SearchEngine } from '../../search/SearchEngine.ets';
 import { ItemTreeToolbar } from '../ItemTreeToolbar.ets';
+
+/** Flattened tree row view-model for ForEach rendering. */
+export interface ItemTreeRowModel {
+  id: string;
+  key: string;
+  rowType: 'item' | 'attachment' | 'note' | 'annotation';
+  level: number;
+  item: ItemModel | null;
+  parentKey: string;
+  title: string;
+  subtitle: string;
+  icon: string;
+  isExpandable: boolean;
+  isExpanded: boolean;
+  childCount: number;
+}
+
+/**
+ * Build flattened tree rows from parent items and child summaries.
+ * Pure function — does not access DB.
+ */
+export function buildItemTreeRows(
+  items: ItemModel[],
+  children: ItemChildSummary[],
+  expandedKeys: string[]
+): ItemTreeRowModel[] {
+  let rows: ItemTreeRowModel[] = [];
+  let childMap = new Map<string, ItemChildSummary[]>();
+  for (let i = 0; i < children.length; i++) {
+    let pk = children[i].parentKey;
+    let list = childMap.get(pk) ?? [];
+    list.push(children[i]);
+    childMap.set(pk, list);
+  }
+  for (let i = 0; i < items.length; i++) {
+    let item = items[i];
+    let key = item.key ?? '';
+    if (key.length === 0) {
+      continue;
+    }
+    let childList = childMap.get(key) ?? [];
+    let isExpanded = expandedKeys.indexOf(key) >= 0;
+    let childCount = childList.length;
+    let icon = _iconForItemType(item.itemData.get('itemType') ?? 'journalArticle');
+
+    rows.push({
+      id: `item-${key}`,
+      key: key,
+      rowType: 'item',
+      level: 0,
+      item: item,
+      parentKey: '',
+      title: item.displayTitle ?? item.itemData.get('title') ?? '(untitled)',
+      subtitle: (item.itemData.get('creator') ?? item.itemData.get('date') ?? ''),
+      icon: icon,
+      isExpandable: childCount > 0,
+      isExpanded: isExpanded,
+      childCount: childCount,
+    });
+
+    if (isExpanded && childList.length > 0) {
+      for (let c = 0; c < childList.length; c++) {
+        let child = childList[c];
+        let subIcon = child.childType === 'attachment' ? 'A' :
+          (child.childType === 'note' ? 'N' : 'H');
+        rows.push({
+          id: `child-${child.key}`,
+          key: child.key,
+          rowType: child.childType,
+          level: 1,
+          item: null,
+          parentKey: key,
+          title: child.title,
+          subtitle: child.subtitle,
+          icon: subIcon,
+          isExpandable: false,
+          isExpanded: false,
+          childCount: 0,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function _iconForItemType(itemType: string): string {
+  let lower = itemType.toLowerCase();
+  if (lower === 'book') { return 'B'; }
+  if (lower === 'conferencepaper') { return 'C'; }
+  if (lower === 'thesis') { return 'T'; }
+  if (lower === 'report') { return 'R'; }
+  if (lower === 'note') { return 'N'; }
+  if (lower === 'attachment') { return 'A'; }
+  if (lower === 'annotation') { return 'H'; }
+  return 'J';
+}
 
 /** One item row in the tree. */
 @Component
@@ -129,7 +225,168 @@ struct ItemRow {
 }
 
 /**
- * Virtualized item list with multi-column layout.
+ * Tree row — renders a single ItemTreeRowModel with level indentation
+ * and expand/collapse button for expandable parent rows.
+ */
+@Component
+struct TreeRow {
+  @Prop row: ItemTreeRowModel;
+  @Prop columns: ItemTreeColumn[] = [];
+  @Prop isSelected: boolean = false;
+  @Prop isChecked: boolean = false;
+  @Prop themeMode: string = 'light';
+  @Prop viewMode: string = 'collection';
+  @Prop showMenu: boolean = true;
+  onTap?: (row: ItemTreeRowModel) => void;
+  onCheck?: (row: ItemTreeRowModel, checked: boolean) => void;
+  onExpand?: (row: ItemTreeRowModel) => void;
+  onMenuAction?: (action: string, row: ItemTreeRowModel) => void;
+
+  build() {
+    Row() {
+      // Level indentation
+      if (this.row.level === 1) {
+        Blank().width(24);
+      }
+      // Expand/collapse control for parent rows
+      if (this.row.isExpandable) {
+        Text(this.row.isExpanded ? '▼' : '▶')
+          .fontSize(10)
+          .fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+          .width(16).textAlign(TextAlign.Center)
+          .margin({ right: 2 })
+          .onClick(() => { if (this.onExpand) { this.onExpand(this.row); } })
+      } else if (this.row.level === 1) {
+        // Narrow spacer for child rows without expand button
+        Blank().width(18);
+      }
+
+      Checkbox({ name: `select-${this.row.id}` })
+        .select(this.isChecked)
+        .width(24).height(24)
+        .margin({ right: 6 })
+        .onChange((checked: boolean) => {
+          if (this.onCheck) { this.onCheck(this.row, checked); }
+        })
+
+      ForEach(this.columns, (col: ItemTreeColumn, idx: number) => {
+        if (col.primary) {
+          Row() {
+            Text(this.row.rowType === 'item' && this.row.item
+              ? _iconForItemType(this.row.item.itemData.get('itemType') ?? 'journalArticle')
+              : this.row.icon)
+              .fontSize(10)
+              .fontColor(this.isSelected ? ZHColor.TEXT_INVERSE : ZHColor.BRAND)
+              .fontWeight(FontWeight.Bold)
+              .width(22).height(22)
+              .textAlign(TextAlign.Center)
+              .backgroundColor(this.isSelected ? ZHColor.BRAND_DARK : ZHColor.BRAND_SOFT)
+              .borderRadius(5)
+              .margin({ right: 8 })
+            Column() {
+              Text(this.row.title)
+                .fontSize(14)
+                .fontColor(this.isSelected ? ZHColor.TEXT :
+                  (this.themeMode === 'dark' ? '#F4F6FA' : ZHColor.TEXT))
+                .fontWeight(this.row.rowType === 'item' ? FontWeight.Medium : FontWeight.Normal)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              if (this.row.subtitle.length > 0) {
+                Text(this.row.subtitle)
+                  .fontSize(11)
+                  .fontColor(this.themeMode === 'dark' ? '#677388' : ZHColor.TEXT_SUBTLE)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }
+          }
+          .layoutWeight(col.flex)
+        } else if (this.row.rowType === 'item' && this.row.item) {
+          Text(col.render(this.row.item))
+            .fontSize(13)
+            .fontColor(this.isSelected ? ZHColor.TEXT :
+              (this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(col.flex)
+            .padding({ left: idx === 0 ? 0 : 8 })
+        } else {
+          // Child rows: only primary column shows content
+          Blank().layoutWeight(col.flex)
+        }
+      }, (col: ItemTreeColumn, idx: number): string => `${col.dataKey}-${idx}`)
+
+      if (this.showMenu && this.row.rowType === 'item') {
+        Button('⋯')
+          .fontSize(16).width(30).height(30)
+          .backgroundColor('#00000000')
+          .fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+          .bindMenu(this._parentMenu)
+      } else if (this.showMenu && this.row.rowType !== 'item') {
+        Button('⋯')
+          .fontSize(16).width(30).height(30)
+          .backgroundColor('#00000000')
+          .fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
+          .bindMenu(this._childMenu)
+      }
+    }
+    .width('100%').height(ZHMetric.ROW_HEIGHT)
+    .padding({ left: 10 + (this.row.level * 20), right: 10 })
+    .backgroundColor(this.isSelected ? ZHColor.SELECTED :
+      (this.themeMode === 'dark' ? '#11151B' : ZHColor.SURFACE))
+    .border({ width: { bottom: 0.5 },
+      color: this.themeMode === 'dark' ? '#252C38' : ZHColor.BORDER_SOFT })
+    .onClick(() => { if (this.onTap) { this.onTap(this.row); } })
+  }
+
+  @Builder
+  _parentMenu() {
+    Column() {
+      Button('Open').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('open', this.row); } })
+      Button('Copy citation').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('citation', this.row); } })
+      Button('Copy bibliography').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('bibliography', this.row); } })
+      Button('Add note').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('note', this.row); } })
+      Button('Add attachment').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('attachment', this.row); } })
+      if (this.viewMode !== 'trash') {
+        Button('Add to collection').fontSize(13).height(36).width('100%')
+          .onClick(() => { if (this.onMenuAction) { this.onMenuAction('addToCollection', this.row); } })
+      }
+      Button(this.viewMode === 'trash' ? 'Restore' : 'Delete').fontSize(13).height(36).width('100%')
+        .onClick(() => {
+          if (this.onMenuAction) {
+            this.onMenuAction(this.viewMode === 'trash' ? 'restore' : 'delete', this.row);
+          }
+        })
+    }
+    .padding(6).backgroundColor('#FFFFFF')
+  }
+
+  @Builder
+  _childMenu() {
+    Column() {
+      if (this.row.rowType === 'attachment') {
+        Button('Open').fontSize(13).height(36).width('100%')
+          .onClick(() => { if (this.onMenuAction) { this.onMenuAction('openAttachment', this.row); } })
+      }
+      if (this.row.rowType === 'note') {
+        Button('Edit').fontSize(13).height(36).width('100%')
+          .onClick(() => { if (this.onMenuAction) { this.onMenuAction('editNote', this.row); } })
+      }
+      if (this.row.rowType === 'annotation') {
+        Button('Open in reader').fontSize(13).height(36).width('100%')
+          .onClick(() => { if (this.onMenuAction) { this.onMenuAction('openAnnotation', this.row); } })
+      }
+      Button('Delete').fontSize(13).height(36).width('100%')
+        .onClick(() => { if (this.onMenuAction) { this.onMenuAction('deleteChild', this.row); } })
+    }
+    .padding(6).backgroundColor('#FFFFFF')
+  }
+}
+
+/**
+ * Virtualized item list with multi-column layout + parent/child hierarchy.
  *
  * Replaces: itemTree.jsx (React VirtualizedTree → ArkUI List + LazyForEach)
  */
@@ -150,6 +407,8 @@ export struct ItemTree {
   @Prop showRowMenu: boolean = true;
   @Prop excludeItemKeys: string[] = [];
   @State items: ItemModel[] = [];
+  @State rows: ItemTreeRowModel[] = [];
+  @State expandedKeys: string[] = [];
   @State columns: ItemTreeColumn[] = DEFAULT_COLUMNS;
   @State sortKey: string = 'title';
   @State sortAsc: boolean = true;
@@ -185,7 +444,6 @@ export struct ItemTree {
       }
 
       if (this.showHeaders) {
-        // Column headers
         Row() {
           ForEach(this.columns, (col: ItemTreeColumn) => {
             Row() {
@@ -193,10 +451,8 @@ export struct ItemTree {
                 .fontSize(11).fontColor(this.themeMode === 'dark' ? '#AAB4C2' : ZHColor.TEXT_MUTED)
                 .fontWeight(FontWeight.Bold)
                 .textCase(TextCase.UpperCase)
-
               if (col.sortable && this.sortKey === col.dataKey) {
-                Text(this.sortAsc ? ' ▲' : ' ▼')
-                  .fontSize(10).fontColor(ZHColor.BRAND)
+                Text(this.sortAsc ? ' ▲' : ' ▼').fontSize(10).fontColor(ZHColor.BRAND)
               }
             }
             .layoutWeight(col.flex)
@@ -217,61 +473,61 @@ export struct ItemTree {
         .padding({ left: 8 })
       }
 
-      // Item rows
+      // Tree rows
       List() {
-        ForEach(this.items, (item: ItemModel) => {
-          let itemKey = item.key ?? '';
-          let needle = this.filterText.toLowerCase();
-          let matches = this.filterText.length === 0 ||
-            (item.itemData.get('title') ?? '').toLowerCase().includes(needle) ||
-            (item.itemData.get('creator') ?? '').toLowerCase().includes(needle) ||
-            (item.itemData.get('date') ?? '').toLowerCase().includes(needle) ||
-            (item.itemData.get('publisher') ?? '').toLowerCase().includes(needle);
-          if (matches && this.excludeItemKeys.indexOf(itemKey) < 0) {
-            ListItem() {
-              ItemRow({
-                item: item,
-                columns: this.columns,
-                isSelected: this.selectedItemKey === (item.key ?? `${item.itemData.get('title') ?? 'item'}-${item.itemData.get('date') ?? ''}`),
-                isChecked: this.selectedItemKeys.indexOf(item.key ?? `${item.itemData.get('title') ?? 'item'}-${item.itemData.get('date') ?? ''}`) >= 0,
-                themeMode: this.themeMode,
-                viewMode: this.viewMode,
-                showMenu: this.showRowMenu,
-                onTap: (it: ItemModel) => {
-                  this.selectedItemKey = it.key ?? `${it.itemData.get('title') ?? 'item'}-${it.itemData.get('date') ?? ''}`;
-                  this.selectedItemKeys = [this.selectedItemKey];
-                  AppStore.selectedItemKey = this.selectedItemKey;
-                  if (this.onItemSelected) { this.onItemSelected(it); }
-                },
-                onCheck: (it: ItemModel, checked: boolean) => {
-                  let key = it.key ?? `${it.itemData.get('title') ?? 'item'}-${it.itemData.get('date') ?? ''}`;
-                  if (checked) {
-                    let nextKeys = [...this.selectedItemKeys];
-                    if (nextKeys.indexOf(key) < 0) {
-                      nextKeys.push(key);
-                    }
-                    this.selectedItemKeys = nextKeys;
-                    this.selectedItemKey = key;
-                    AppStore.selectedItemKey = key;
-                    if (this.onItemSelected) { this.onItemSelected(it); }
-                  } else {
-                    this.selectedItemKeys = this.selectedItemKeys.filter((selectedKey: string): boolean => selectedKey !== key);
-                    if (this.selectedItemKey === key) {
-                      this.selectedItemKey = this.selectedItemKeys.length > 0 ? this.selectedItemKeys[0] : '';
-                      AppStore.selectedItemKey = this.selectedItemKey;
-                    }
+        ForEach(this.rows, (row: ItemTreeRowModel) => {
+          // filterText already applied to parent items; child rows display
+          // only when parent is expanded (no separate child filtering)
+          ListItem() {
+            TreeRow({
+              row: row,
+              columns: this.columns,
+              isSelected: this.selectedItemKey === row.key,
+              isChecked: this.selectedItemKeys.indexOf(row.key) >= 0,
+              themeMode: this.themeMode,
+              viewMode: this.viewMode,
+              showMenu: this.showRowMenu,
+              onTap: (r: ItemTreeRowModel) => {
+                this.selectedItemKey = r.key;
+                this.selectedItemKeys = [r.key];
+                AppStore.selectedItemKey = r.key;
+                if (r.item && this.onItemSelected) {
+                  this.onItemSelected(r.item);
+                }
+              },
+              onCheck: (r: ItemTreeRowModel, checked: boolean) => {
+                if (checked) {
+                  if (this.selectedItemKeys.indexOf(r.key) < 0) {
+                    this.selectedItemKeys = [...this.selectedItemKeys, r.key];
                   }
-                },
-                onMenuAction: (action: string, it: ItemModel) => {
-                  this.selectedItemKey = it.key ?? `${it.itemData.get('title') ?? 'item'}-${it.itemData.get('date') ?? ''}`;
-                  this.selectedItemKeys = [this.selectedItemKey];
-                  AppStore.selectedItemKey = this.selectedItemKey;
-                  if (this.showRowMenu && this.onItemAction) { this.onItemAction(action, it); }
-                },
-              })
-            }
+                } else {
+                  this.selectedItemKeys = this.selectedItemKeys.filter((k: string) => k !== r.key);
+                }
+                this.selectedItemKey = this.selectedItemKeys.length > 0
+                  ? this.selectedItemKeys[this.selectedItemKeys.length - 1] : '';
+                AppStore.selectedItemKey = this.selectedItemKey;
+                if (r.item && this.onItemSelected) {
+                  this.onItemSelected(r.item);
+                }
+              },
+              onExpand: (r: ItemTreeRowModel) => {
+                this._toggleExpand(r.key);
+              },
+              onMenuAction: (action: string, r: ItemTreeRowModel) => {
+                this.selectedItemKey = r.key;
+                this.selectedItemKeys = [r.key];
+                AppStore.selectedItemKey = r.key;
+                if (this.onItemAction && r.item) {
+                  // Map child actions to parent-compatible dispatch
+                  this.onItemAction(action, r.item);
+                } else if (this.onItemAction && !r.item) {
+                  // Child row without ItemModel — forward action string
+                  this.onItemAction(action, new ItemModel());
+                }
+              },
+            })
           }
-        }, (item: ItemModel): string => item.key ?? `${item.itemData.get('title') ?? 'item'}-${item.itemData.get('date') ?? ''}`)
+        }, (row: ItemTreeRowModel): string => row.id)
       }
       .layoutWeight(1)
       .scrollBar(BarState.Auto)
@@ -280,7 +536,41 @@ export struct ItemTree {
     .width('100%').height('100%')
   }
 
-  /** Sort items by sortKey/sortAsc. */
+  private _toggleExpand(key: string): void {
+    let idx = this.expandedKeys.indexOf(key);
+    if (idx >= 0) {
+      this.expandedKeys = this.expandedKeys.filter((k: string) => k !== key);
+    } else {
+      this.expandedKeys = [...this.expandedKeys, key];
+    }
+    this._rebuildRows();
+  }
+
+  private _rebuildRows(): void {
+    let parentKeys: string[] = [];
+    for (let i = 0; i < this.items.length; i++) {
+      let k = this.items[i].key ?? '';
+      if (k.length > 0 && this.expandedKeys.indexOf(k) >= 0) {
+        parentKeys.push(k);
+      }
+    }
+    if (parentKeys.length === 0) {
+      this.rows = buildItemTreeRows(this.items, [], this.expandedKeys);
+      return;
+    }
+    let repo = new LibraryRepository();
+    let context = getContext(this).getApplicationContext();
+    repo.open(context).then(() => {
+      return repo.listChildRowsForItems(parentKeys);
+    }).then((childRows: ItemChildSummary[]) => {
+      this.rows = buildItemTreeRows(this.items, childRows, this.expandedKeys);
+      repo.close();
+    }).catch((_err: Error) => {
+      this.rows = buildItemTreeRows(this.items, [], this.expandedKeys);
+      repo.close();
+    });
+  }
+
   private _sortItems(): void {
     let foundCol = DEFAULT_COLUMNS.find((c: ItemTreeColumn) => c.dataKey === this.sortKey);
     if (!foundCol) { return; }
@@ -312,19 +602,16 @@ export struct ItemTree {
       if (this.viewMode === 'search' && this.collectionKey.length > 0) {
         return repo.getSavedSearchQuery(this.collectionKey).then((savedSearch) => {
           return repo.listItems(null, '').then((items: ItemModel[]) => {
-            if (!savedSearch) {
-              return items;
-            }
+            if (!savedSearch) { return items; }
             let engine = new SearchEngine();
             engine.setJoinMode(savedSearch.joinMode);
             for (let i = 0; i < savedSearch.conditions.length; i++) {
-              let cond = savedSearch.conditions[i];
-              engine.addCondition(cond.condition, cond.operator, cond.value, cond.required);
+              engine.addCondition(savedSearch.conditions[i].condition,
+                savedSearch.conditions[i].operator, savedSearch.conditions[i].value,
+                savedSearch.conditions[i].required);
             }
             let filtered = engine.filter(items);
-            if (this.filterText.length === 0) {
-              return filtered;
-            }
+            if (this.filterText.length === 0) { return filtered; }
             let needle = this.filterText.toLowerCase();
             return filtered.filter((item: ItemModel): boolean => {
               return (item.itemData.get('title') ?? '').toLowerCase().includes(needle) ||
@@ -345,9 +632,11 @@ export struct ItemTree {
         });
       }
       this._sortItems();
+      this._rebuildRows();  // build tree rows from sorted items
       repo.close();
     }).catch((_err: Error) => {
       this.items = [];
+      this.rows = [];
       repo.close();
     });
   }

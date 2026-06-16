@@ -33,6 +33,16 @@ export interface SavedSearchQueryData {
 
 export type RemoteObjectType = 'collection' | 'item' | 'search';
 
+/** Lightweight child-row summary for item-tree hierarchy. */
+export interface ItemChildSummary {
+  key: string;
+  parentKey: string;
+  childType: 'attachment' | 'note' | 'annotation';
+  title: string;
+  subtitle: string;
+  sortIndex: string;
+}
+
 export class LibraryRepository {
   private db: ZoteroDb;
 
@@ -1020,6 +1030,88 @@ export class LibraryRepository {
         [relatedID]
       );
     });
+  }
+
+  /**
+   * Return child rows (attachments, notes) for the given parent item keys.
+   * Excludes items in deletedItems.  Does not fetch annotations (TODO).
+   */
+  async listChildRowsForItems(parentKeys: string[]): Promise<ItemChildSummary[]> {
+    if (parentKeys.length === 0) { return []; }
+    let results: ItemChildSummary[] = [];
+
+    // Build parentKey→parentItemID map
+    let parentIDs: number[] = [];
+    let idToKey = new Map<number, string>();
+    for (let i = 0; i < parentKeys.length; i++) {
+      let pid = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [parentKeys[i]]
+      ));
+      if (pid > 0) {
+        parentIDs.push(pid);
+        idToKey.set(pid, parentKeys[i]);
+      }
+    }
+    if (parentIDs.length === 0) { return results; }
+
+    // Attachments
+    let attRows = await this.db.queryAsync(
+      `SELECT i.key, ia.parentItemID, ia.contentType, ia.path,
+              COALESCE(
+                (SELECT v.value FROM itemData d
+                 JOIN itemDataValues v ON v.valueID = d.valueID
+                 JOIN fields f ON f.fieldID = d.fieldID
+                 WHERE d.itemID = i.itemID AND f.fieldName = 'title'),
+                ia.path,
+                'Attachment'
+              ) AS title
+       FROM itemAttachments ia
+       JOIN items i ON i.itemID = ia.itemID
+       WHERE ia.parentItemID IN (${parentIDs.join(',')})
+         AND NOT EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)
+       ORDER BY i.dateAdded`
+    );
+    for (let i = 0; i < attRows.length; i++) {
+      let pidKey = idToKey.get(this.toNumber(attRows[i]['parentItemID'])) ?? '';
+      results.push({
+        key: this.toString(attRows[i]['key'], ''),
+        parentKey: pidKey,
+        childType: 'attachment',
+        title: this.toString(attRows[i]['title'], 'Attachment'),
+        subtitle: this.toString(attRows[i]['contentType'], ''),
+        sortIndex: '',
+      });
+    }
+
+    // Notes
+    let noteRows = await this.db.queryAsync(
+      `SELECT i.key, n.parentItemID, n.title,
+              COALESCE(n.title, substr(n.note, 1, 80), 'Note') AS displayTitle,
+              i.dateModified
+       FROM itemNotes n
+       JOIN items i ON i.itemID = n.itemID
+       WHERE n.parentItemID IN (${parentIDs.join(',')})
+         AND NOT EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)
+       ORDER BY i.dateModified DESC`
+    );
+    for (let i = 0; i < noteRows.length; i++) {
+      let pidKey = idToKey.get(this.toNumber(noteRows[i]['parentItemID'])) ?? '';
+      results.push({
+        key: this.toString(noteRows[i]['key'], ''),
+        parentKey: pidKey,
+        childType: 'note',
+        title: this.toString(noteRows[i]['displayTitle'], 'Note'),
+        subtitle: this.toString(noteRows[i]['dateModified'], ''),
+        sortIndex: '',
+      });
+    }
+
+    // TODO: annotations — itemAnnotations.parentItemID points to the
+    // attachment item, not the regular item.  Three-level tree
+    // (regular→attachment→annotation) requires a second query pass.
+    // For now, annotations are not shown in the item tree.
+
+    return results;
   }
 
   async addItemsToCollection(itemKeys: string[], collectionKey: string): Promise<void> {
