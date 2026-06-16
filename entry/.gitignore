@@ -1,0 +1,10 @@
+# Build output
+node_modules/
+oh_modules/
+.cxx/
+.preview/
+.hvigor/
+
+# IDE
+.idea/
+*.iml

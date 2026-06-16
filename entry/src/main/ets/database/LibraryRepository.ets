@@ -1,0 +1,1694 @@
+/*
+ * Local-library repository for UI view models.
+ *
+ * Keeps ArkUI components DB-backed while preserving Zotero-like tables.
+ */
+
+import { ZoteroDb, Row } from './ZoteroDb.ets';
+import { migrate } from './SchemaMigration.ets';
+import { ItemModel } from '../model/ItemModel.ets';
+import { AttachmentLinkMode, ZoteroTag } from '../model/ItemTypes.ets';
+import { CollectionTreeRow } from '../ui/tree/CollectionTreeRow.ets';
+import { AttachmentEntry } from '../ui/AttachmentsList.ets';
+import { StorageRequest } from '../sync/StorageRequest.ets';
+import { PdfAnnotation } from '../reader/ReaderTypes.ets';
+import { NoteEntry } from '../ui/NotesList.ets';
+import { JoinMode, SearchCondition } from '../search/SearchEngine.ets';
+import { FileStorage } from '../utils/FileStorage.ets';
+import { RelatedItemRef } from '../model/RelatedItemModel.ets';
+
+export interface SavedSearchConditionData {
+  condition: string;
+  operator: string;
+  value: string;
+  required: boolean;
+}
+
+export interface SavedSearchQueryData {
+  key: string;
+  name: string;
+  joinMode: JoinMode;
+  conditions: SearchCondition[];
+}
+
+export type RemoteObjectType = 'collection' | 'item' | 'search';
+
+export class LibraryRepository {
+  private db: ZoteroDb;
+
+  constructor() {
+    this.db = new ZoteroDb('zotero.sqlite');
+  }
+
+  async open(context: Context): Promise<void> {
+    await this.db.open(context);
+    await migrate(this.db);
+    await this.ensureStarterData();
+  }
+
+  async close(): Promise<void> {
+    await this.db.close();
+  }
+
+  async listCollectionRows(): Promise<CollectionTreeRow[]> {
+    let rows: CollectionTreeRow[] = [
+      {
+        id: 'L1',
+        type: 'library',
+        name: 'My Library',
+        level: 0,
+        isOpen: true,
+        hasChildren: true,
+        libraryID: 1,
+      },
+    ];
+
+    let collections = await this.db.queryAsync(
+      `SELECT collectionID, collectionName, parentCollectionID, libraryID, key
+       FROM collections
+       WHERE libraryID = 1
+       ORDER BY parentCollectionID IS NOT NULL, parentCollectionID, collectionName`
+    );
+    this.appendCollectionChildren(rows, collections, null, 1);
+
+    let searches = await this.db.queryAsync(
+      `SELECT savedSearchID, savedSearchName, libraryID, key
+       FROM savedSearches
+       WHERE libraryID = 1
+       ORDER BY savedSearchName`
+    );
+    for (let i = 0; i < searches.length; i++) {
+      let searchID = this.toNumber(searches[i]['savedSearchID']);
+      rows.push({
+        id: `S${searchID}`,
+        type: 'search',
+        name: this.toString(searches[i]['savedSearchName'], 'Saved Search'),
+        level: 1,
+        isOpen: false,
+        hasChildren: false,
+        libraryID: this.toNumber(searches[i]['libraryID']),
+        key: this.toString(searches[i]['key'], ''),
+        parentRowID: 'L1',
+      });
+    }
+
+    rows.push({ id: 'duplicates-1', type: 'duplicates', name: 'Duplicate Items', level: 1, isOpen: false, hasChildren: false, libraryID: 1, parentRowID: 'L1' });
+    rows.push({ id: 'unfiled-1', type: 'unfiled', name: 'Unfiled Items', level: 1, isOpen: false, hasChildren: false, libraryID: 1, parentRowID: 'L1' });
+    rows.push({ id: 'trash-1', type: 'trash', name: 'Trash', level: 1, isOpen: false, hasChildren: false, libraryID: 1, parentRowID: 'L1' });
+    return rows;
+  }
+
+  async listItems(collectionKey: string | null, filterText: string): Promise<ItemModel[]> {
+    let params: (string | number | null)[] = [];
+    let where = `WHERE i.libraryID = 1
+       AND NOT EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)`;
+    if (collectionKey !== null && collectionKey.length > 0) {
+      where += ` AND c.key = ?`;
+      params.push(collectionKey);
+    }
+    return this.queryItems(where, params, filterText);
+  }
+
+  async listUnfiledItems(filterText: string): Promise<ItemModel[]> {
+    return this.queryItems(
+      `WHERE i.libraryID = 1
+       AND NOT EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)
+       AND NOT EXISTS (SELECT 1 FROM collectionItems ci2 WHERE ci2.itemID = i.itemID)`,
+      [],
+      filterText
+    );
+  }
+
+  async listTrashItems(filterText: string): Promise<ItemModel[]> {
+    return this.queryItems(
+      `WHERE i.libraryID = 1
+       AND EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)`,
+      [],
+      filterText
+    );
+  }
+
+  async listDuplicateItems(filterText: string): Promise<ItemModel[]> {
+    let items = await this.listItems(null, filterText);
+    let seen: Map<string, number> = new Map();
+    let duplicateKeys: string[] = [];
+    for (let i = 0; i < items.length; i++) {
+      let title = (items[i].itemData.get('title') ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      let year = (items[i].itemData.get('date') ?? '').replace(/[^0-9]+/g, '').substring(0, 4);
+      let key = `${title}|${year}`;
+      if (title.length === 0) {
+        continue;
+      }
+      let count = seen.get(key) ?? 0;
+      seen.set(key, count + 1);
+      if (count === 1) {
+        duplicateKeys.push(key);
+      }
+    }
+    if (duplicateKeys.length === 0) {
+      return [];
+    }
+    return items.filter((item: ItemModel): boolean => {
+      let title = (item.itemData.get('title') ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      let year = (item.itemData.get('date') ?? '').replace(/[^0-9]+/g, '').substring(0, 4);
+      return duplicateKeys.indexOf(`${title}|${year}`) >= 0;
+    });
+  }
+
+  private async queryItems(where: string, params: (string | number | null)[], filterText: string): Promise<ItemModel[]> {
+
+    let rows = await this.db.queryAsync(
+      `SELECT i.itemID, i.libraryID, i.key, i.itemTypeID, i.version, i.dateAdded,
+              i.dateModified, it.typeName, f.fieldName, v.value,
+              cr.firstName, cr.lastName
+       FROM items i
+       LEFT JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+       LEFT JOIN itemData d ON d.itemID = i.itemID
+       LEFT JOIN fields f ON f.fieldID = d.fieldID
+       LEFT JOIN itemDataValues v ON v.valueID = d.valueID
+       LEFT JOIN itemCreators ic ON ic.itemID = i.itemID AND ic.orderIndex = 0
+       LEFT JOIN creators cr ON cr.creatorID = ic.creatorID
+       LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
+       LEFT JOIN itemNotes n ON n.itemID = i.itemID
+       LEFT JOIN collectionItems ci ON ci.itemID = i.itemID
+       LEFT JOIN collections c ON c.collectionID = ci.collectionID
+       ${where}
+       ORDER BY i.dateModified DESC, i.itemID DESC`,
+      params
+    );
+
+    let itemIDs: number[] = [];
+    let items: ItemModel[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      let itemID = this.toNumber(rows[i]['itemID']);
+      let existingIndex = itemIDs.indexOf(itemID);
+      let item: ItemModel;
+      if (existingIndex >= 0) {
+        item = items[existingIndex];
+      } else {
+        item = new ItemModel();
+        item.id = itemID;
+        item.libraryID = this.toNumber(rows[i]['libraryID']);
+        item.key = this.toString(rows[i]['key'], '');
+        item.version = this.toNumber(rows[i]['version']);
+        item.dateAdded = this.toString(rows[i]['dateAdded'], '');
+        item.dateModified = this.toString(rows[i]['dateModified'], '');
+        item.itemTypeID = this.toNumber(rows[i]['itemTypeID']);
+        item.itemData.set('itemType', this.toString(rows[i]['typeName'], 'journalArticle'));
+        let creator = this.creatorName(rows[i]);
+        if (creator.length > 0) {
+          item.itemData.set('creator', creator);
+        }
+        let typeName = this.toString(rows[i]['typeName'], 'journalArticle');
+        if (typeName === 'attachment') {
+          item.attachmentLinkMode = this.toNumber(rows[i]['linkMode']) as AttachmentLinkMode;
+          item.attachmentPath = this.toString(rows[i]['path'], '');
+          item.attachmentContentType = this.toString(rows[i]['contentType'], '');
+        } else if (typeName === 'note') {
+          let noteText = this.toString(rows[i]['note'], '');
+          item.noteText = noteText;
+          item.displayTitle = this.toString(rows[i]['title'], '') || noteText.substring(0, 80);
+        }
+        itemIDs.push(itemID);
+        items.push(item);
+      }
+      let fieldName = this.toString(rows[i]['fieldName'], '');
+      if (fieldName.length > 0) {
+        item.itemData.set(fieldName, this.toString(rows[i]['value'], ''));
+      }
+    }
+
+    if (filterText.length === 0) {
+      await this.attachTags(items);
+      return items;
+    }
+    await this.attachTags(items);
+    let needle = filterText.toLowerCase();
+    return items.filter((item: ItemModel): boolean => {
+      return (item.itemData.get('title') ?? '').toLowerCase().includes(needle) ||
+        (item.itemData.get('creator') ?? '').toLowerCase().includes(needle) ||
+        (item.itemData.get('date') ?? '').toLowerCase().includes(needle) ||
+        (item.itemData.get('publisher') ?? '').toLowerCase().includes(needle) ||
+        (item.itemData.get('publicationTitle') ?? '').toLowerCase().includes(needle);
+    });
+  }
+
+  async getItemByKey(itemKey: string): Promise<ItemModel | null> {
+    if (itemKey.length === 0) {
+      return null;
+    }
+    let items = await this.listItems(null, '');
+    for (let i = 0; i < items.length; i++) {
+      if ((items[i].key ?? '') === itemKey) {
+        return items[i];
+      }
+    }
+    return null;
+  }
+
+  async getItemsByKeys(itemKeys: string[]): Promise<ItemModel[]> {
+    if (itemKeys.length === 0) {
+      return [];
+    }
+    let allItems = await this.listItems(null, '');
+    let result: ItemModel[] = [];
+    for (let i = 0; i < allItems.length; i++) {
+      let key = allItems[i].key ?? '';
+      if (itemKeys.indexOf(key) >= 0) {
+        result.push(allItems[i]);
+      }
+    }
+    return result;
+  }
+
+  async listAttachments(itemKey: string): Promise<AttachmentEntry[]> {
+    let parentID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (parentID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT i.itemID, i.key, ia.contentType, ia.linkMode, ia.path, ia.syncState, v.value AS title
+       FROM itemAttachments ia
+       JOIN items i ON i.itemID = ia.itemID
+       LEFT JOIN itemData d ON d.itemID = i.itemID AND d.fieldID = 1
+       LEFT JOIN itemDataValues v ON v.valueID = d.valueID
+       WHERE ia.parentItemID = ?
+       ORDER BY i.dateAdded`,
+      [parentID]
+    );
+    let attachments: AttachmentEntry[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      attachments.push({
+        id: this.toNumber(rows[i]['itemID']),
+        key: this.toString(rows[i]['key'], ''),
+        filename: this.toString(rows[i]['title'], this.toString(rows[i]['path'], 'Attachment')),
+        contentType: this.toString(rows[i]['contentType'], 'text/html'),
+        linkMode: this.linkModeName(this.toNumber(rows[i]['linkMode'])),
+        path: this.toString(rows[i]['path'], ''),
+        syncState: this.toNumber(rows[i]['syncState']),
+      });
+    }
+    return attachments;
+  }
+
+  async listAnnotations(itemKey: string): Promise<PdfAnnotation[]> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT annotationID, type, pageIndex, x, y, width, height, color,
+              text, comment, authorName, sortIndex, dateModified
+       FROM itemAnnotations
+       WHERE parentItemID = ?
+       ORDER BY pageIndex, sortIndex, dateModified`,
+      [itemID]
+    );
+    let annotations: PdfAnnotation[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      annotations.push({
+        id: this.toString(rows[i]['annotationID'], ''),
+        type: this.toAnnotationType(this.toString(rows[i]['type'], 'highlight')),
+        pageIndex: this.toNumber(rows[i]['pageIndex']),
+        position: {
+          x: this.toFloat(rows[i]['x']),
+          y: this.toFloat(rows[i]['y']),
+          width: this.toFloat(rows[i]['width']),
+          height: this.toFloat(rows[i]['height']),
+        },
+        color: this.toString(rows[i]['color'], '#FFD700'),
+        text: this.toString(rows[i]['text'], ''),
+        comment: this.toString(rows[i]['comment'], ''),
+        authorName: this.toString(rows[i]['authorName'], ''),
+        sortIndex: this.toString(rows[i]['sortIndex'], ''),
+        dateModified: this.toString(rows[i]['dateModified'], ''),
+      });
+    }
+    return annotations;
+  }
+
+  async saveAnnotation(itemKey: string, annotation: PdfAnnotation): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0 || annotation.id.length === 0) {
+      return;
+    }
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO itemAnnotations
+       (annotationID, parentItemID, type, pageIndex, x, y, width, height,
+        color, text, comment, authorName, sortIndex, dateModified, synced)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      [
+        annotation.id,
+        itemID,
+        annotation.type,
+        annotation.pageIndex,
+        annotation.position.x,
+        annotation.position.y,
+        annotation.position.width,
+        annotation.position.height,
+        annotation.color,
+        annotation.text ?? '',
+        annotation.comment ?? '',
+        annotation.authorName ?? '',
+        annotation.sortIndex,
+        annotation.dateModified,
+      ]
+    );
+  }
+
+  async deleteAnnotation(itemKey: string, annotationID: string): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0 || annotationID.length === 0) {
+      return;
+    }
+    await this.db.executeSql(
+      `DELETE FROM itemAnnotations WHERE parentItemID = ? AND annotationID = ?`,
+      [itemID, annotationID]
+    );
+  }
+
+  private async ensureStarterData(): Promise<void> {
+    await this.db.executeSql(
+      `INSERT OR IGNORE INTO libraries (libraryID, type, editable, filesEditable)
+       VALUES (1, 'user', 1, 1)`
+    );
+    let count = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM items WHERE libraryID = 1`);
+    if (this.toNumber(count) > 0) {
+      return;
+    }
+
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO collections (collectionName, parentCollectionID, libraryID, key, synced)
+         VALUES ('Research Papers', NULL, 1, 'research-papers', 1)`
+      );
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO collections (collectionName, parentCollectionID, libraryID, key, synced)
+         VALUES ('Coursework', NULL, 1, 'coursework', 1)`
+      );
+
+      let researchID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT collectionID FROM collections WHERE key = 'research-papers'`
+      ));
+      let courseworkID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT collectionID FROM collections WHERE key = 'coursework'`
+      ));
+
+      await this.insertStarterItem('Attention Is All You Need', 'Vaswani et al.', 'conferencePaper', '2017', 'NeurIPS', researchID);
+      await this.insertStarterItem('A Survey of Large Language Models', 'Zhao et al.', 'journalArticle', '2024', 'AI Open', researchID);
+      await this.insertStarterItem('Understanding Deep Learning', 'Prince', 'book', '2023', 'MIT Press', courseworkID);
+      await this.insertStarterItem('Scaling Laws for Neural Language Models', 'Kaplan et al.', 'journalArticle', '2020', 'arXiv', researchID);
+    });
+  }
+
+  async createCollection(name: string, parentCollectionKey: string | null): Promise<string> {
+    let parentID: number | null = null;
+    if (parentCollectionKey !== null && parentCollectionKey.length > 0) {
+      parentID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+        [parentCollectionKey]
+      ));
+      if (parentID === 0) {
+        parentID = null;
+      }
+    }
+    let key = await this.uniqueKey('collections', name);
+    if (parentID === null) {
+      await this.db.executeSql(
+        `INSERT INTO collections (collectionName, parentCollectionID, libraryID, key, synced)
+         VALUES (?, NULL, 1, ?, 0)`,
+        [name, key]
+      );
+    } else {
+      await this.db.executeSql(
+        `INSERT INTO collections (collectionName, parentCollectionID, libraryID, key, synced)
+         VALUES (?, ?, 1, ?, 0)`,
+        [name, parentID, key]
+      );
+    }
+    return key;
+  }
+
+  async renameCollection(collectionKey: string, newName: string): Promise<void> {
+    if (collectionKey.length === 0 || newName.trim().length === 0) {
+      return;
+    }
+    let collectionID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+      [collectionKey]
+    ));
+    if (collectionID === 0) {
+      return;
+    }
+    await this.db.executeSql(
+      `UPDATE collections SET collectionName = ?, synced = 0 WHERE collectionID = ?`,
+      [newName.trim(), collectionID]
+    );
+  }
+
+  async deleteCollection(collectionKey: string): Promise<void> {
+    if (collectionKey.length === 0) {
+      return;
+    }
+    let collectionID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+      [collectionKey]
+    ));
+    if (collectionID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(`DELETE FROM collectionItems WHERE collectionID = ?`, [collectionID]);
+      await this.db.executeSql(`DELETE FROM collections WHERE collectionID = ?`, [collectionID]);
+    });
+  }
+
+  async renameSavedSearch(searchKey: string, newName: string): Promise<void> {
+    if (searchKey.length === 0 || newName.trim().length === 0) {
+      return;
+    }
+    let savedSearchID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT savedSearchID FROM savedSearches WHERE libraryID = 1 AND key = ?`,
+      [searchKey]
+    ));
+    if (savedSearchID === 0) {
+      return;
+    }
+    await this.db.executeSql(
+      `UPDATE savedSearches SET savedSearchName = ?, clientDateModified = datetime('now'), synced = 0 WHERE savedSearchID = ?`,
+      [newName.trim(), savedSearchID]
+    );
+  }
+
+  async deleteSavedSearch(searchKey: string): Promise<void> {
+    if (searchKey.length === 0) {
+      return;
+    }
+    let savedSearchID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT savedSearchID FROM savedSearches WHERE libraryID = 1 AND key = ?`,
+      [searchKey]
+    ));
+    if (savedSearchID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(`DELETE FROM savedSearchConditions WHERE savedSearchID = ?`, [savedSearchID]);
+      await this.db.executeSql(`DELETE FROM savedSearches WHERE savedSearchID = ?`, [savedSearchID]);
+    });
+  }
+
+  async createItem(collectionKey: string | null, itemType: string, title: string): Promise<string> {
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [itemType]
+    ));
+    let key = await this.uniqueKey('items', title);
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT INTO items (itemTypeID, libraryID, key, version, synced)
+         VALUES (?, 1, ?, 0, 0)`,
+        [typeID > 0 ? typeID : 1, key]
+      );
+      let itemID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [key]
+      ));
+      if (collectionKey !== null && collectionKey.length > 0) {
+        let collectionID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+          [collectionKey]
+        ));
+        if (collectionID > 0) {
+          await this.db.executeSql(
+            `INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?, ?)`,
+            [collectionID, itemID]
+          );
+        }
+      }
+      await this.putItemField(itemID, 'title', title);
+      await this.putItemField(itemID, 'itemType', itemType);
+      await this.putItemField(itemID, 'date', `${new Date().getFullYear()}`);
+    });
+    return key;
+  }
+
+  async listNotes(itemKey: string): Promise<NoteEntry[]> {
+    let parentID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (parentID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT i.itemID, i.key, n.title, n.note, i.dateModified
+       FROM itemNotes n
+       JOIN items i ON i.itemID = n.itemID
+       WHERE n.parentItemID = ?
+       AND NOT EXISTS (SELECT 1 FROM deletedItems di WHERE di.itemID = i.itemID)
+       ORDER BY i.dateModified DESC`,
+      [parentID]
+    );
+    let notes: NoteEntry[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      let noteText = this.toString(rows[i]['note'], '');
+      notes.push({
+        id: this.toNumber(rows[i]['itemID']),
+        key: this.toString(rows[i]['key'], ''),
+        title: this.toString(rows[i]['title'], 'Note'),
+        preview: noteText.substring(0, 120),
+        dateModified: this.toString(rows[i]['dateModified'], ''),
+        noteText: noteText,
+      });
+    }
+    return notes;
+  }
+
+  async createNote(parentItemKey: string, title: string, noteText: string): Promise<string> {
+    let parentID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [parentItemKey]
+    ));
+    if (parentID === 0) {
+      return '';
+    }
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = 'note'`
+    ));
+    let key = await this.uniqueKey('items', title);
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT INTO items (itemTypeID, libraryID, key, version, synced)
+         VALUES (?, 1, ?, 0, 0)`,
+        [typeID > 0 ? typeID : 8, key]
+      );
+      let itemID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [key]
+      ));
+      await this.db.executeSql(
+        `INSERT INTO itemNotes (itemID, parentItemID, note, title)
+         VALUES (?, ?, ?, ?)`,
+        [itemID, parentID, noteText, title]
+      );
+      await this.putItemField(itemID, 'title', title);
+      await this.putItemField(itemID, 'note', noteText);
+      await this.putItemField(itemID, 'itemType', 'note');
+    });
+    return key;
+  }
+
+  async updateNote(noteID: number, title: string, noteText: string): Promise<void> {
+    let itemKey = this.toString(await this.db.valueQueryAsync(
+      `SELECT key FROM items WHERE itemID = ?`, [noteID]
+    ), '');
+    if (itemKey.length === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `UPDATE itemNotes SET title = ?, note = ? WHERE itemID = ?`,
+        [title, noteText, noteID]
+      );
+      await this.putItemField(noteID, 'title', title);
+      await this.putItemField(noteID, 'note', noteText);
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now'), dateModified = datetime('now')
+         WHERE itemID = ?`,
+        [noteID]
+      );
+    });
+  }
+
+  async deleteNote(noteID: number): Promise<void> {
+    let itemKey = this.toString(await this.db.valueQueryAsync(
+      `SELECT key FROM items WHERE itemID = ?`, [noteID]
+    ), '');
+    if (itemKey.length === 0) {
+      return;
+    }
+    await this.moveItemToTrash(itemKey);
+  }
+
+  async createLinkedUrlAttachment(parentItemKey: string, url: string): Promise<string> {
+    let parentID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [parentItemKey]
+    ));
+    if (parentID === 0) {
+      return '';
+    }
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = 'attachment'`
+    ));
+    let key = await this.uniqueKey('items', url);
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT INTO items (itemTypeID, libraryID, key, version, synced)
+         VALUES (?, 1, ?, 0, 0)`,
+        [typeID > 0 ? typeID : 9, key]
+      );
+      let itemID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [key]
+      ));
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemAttachments
+         (itemID, parentItemID, linkMode, contentType, path, syncState)
+         VALUES (?, ?, 3, 'text/html', ?, 0)`,
+        [itemID, parentID, url]
+      );
+      await this.putItemField(itemID, 'title', url);
+      await this.putItemField(itemID, 'url', url);
+      await this.putItemField(itemID, 'itemType', 'attachment');
+    });
+    return key;
+  }
+
+  async deleteAttachment(itemKey: string): Promise<void> {
+    await this.moveItemToTrash(itemKey);
+  }
+
+  async createImportedFileAttachment(parentItemKey: string, sourceUri: string, appContext: Context): Promise<string> {
+    let parentID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [parentItemKey]
+    ));
+    if (parentID === 0 || sourceUri.length === 0) {
+      return '';
+    }
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = 'attachment'`
+    ));
+    let sourceName = this.fileNameFromUri(sourceUri);
+    let key = await this.uniqueKey('items', sourceName);
+    let storage = new FileStorage(appContext.filesDir ?? '');
+    let contentType = this.guessContentType(sourceName);
+    let stored = await storage.importFile(sourceUri, key, contentType);
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT INTO items (itemTypeID, libraryID, key, version, synced)
+         VALUES (?, 1, ?, 0, 0)`,
+        [typeID > 0 ? typeID : 9, key]
+      );
+      let itemID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [key]
+      ));
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemAttachments
+         (itemID, parentItemID, linkMode, contentType, path, syncState)
+         VALUES (?, ?, 0, ?, ?, 0)`,
+        [itemID, parentID, stored.contentType, stored.localPath]
+      );
+      await this.putItemField(itemID, 'title', sourceName);
+      await this.putItemField(itemID, 'filename', sourceName);
+      await this.putItemField(itemID, 'path', stored.localPath);
+      await this.putItemField(itemID, 'itemType', 'attachment');
+    });
+    return key;
+  }
+
+  async importItems(items: ItemModel[], collectionKey: string | null): Promise<string[]> {
+    let importedKeys: string[] = [];
+    for (let i = 0; i < items.length; i++) {
+      let source = items[i];
+      let title = source.itemData.get('title') ?? 'Imported Item';
+      let itemType = source.itemData.get('itemType') ?? source.itemData.get('type') ?? 'journalArticle';
+      let key = await this.createItem(collectionKey, itemType, title);
+      importedKeys.push(key);
+      let itemData = source.itemData;
+      let fieldNames: string[] = [];
+      let values: string[] = [];
+      itemData.forEach((value: string, fieldName: string) => {
+        fieldNames.push(fieldName);
+        values.push(value);
+      });
+      for (let j = 0; j < fieldNames.length; j++) {
+        await this.updateItemField(key, fieldNames[j], values[j]);
+      }
+    }
+    return importedKeys;
+  }
+
+  async createSavedSearch(name: string, conditions: SavedSearchConditionData[]): Promise<string> {
+    let key = await this.uniqueKey('savedSearches', name);
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT INTO savedSearches (savedSearchName, libraryID, key, synced)
+         VALUES (?, 1, ?, 0)`,
+        [name, key]
+      );
+      let savedSearchID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT savedSearchID FROM savedSearches WHERE libraryID = 1 AND key = ?`,
+        [key]
+      ));
+      for (let i = 0; i < conditions.length; i++) {
+        await this.db.executeSql(
+          `INSERT INTO savedSearchConditions
+           (savedSearchID, searchConditionID, condition, operator, value, required)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            savedSearchID,
+            i + 1,
+            conditions[i].condition,
+            conditions[i].operator,
+            conditions[i].value,
+            conditions[i].required ? 1 : 0,
+          ]
+        );
+      }
+    });
+    return key;
+  }
+
+  async getSavedSearchQuery(searchKey: string): Promise<SavedSearchQueryData | null> {
+    if (searchKey.length === 0) {
+      return null;
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT s.savedSearchID, s.savedSearchName, sc.searchConditionID, sc.condition, sc.operator, sc.value, sc.required
+       FROM savedSearches s
+       LEFT JOIN savedSearchConditions sc ON sc.savedSearchID = s.savedSearchID
+       WHERE s.libraryID = 1 AND s.key = ?
+       ORDER BY sc.searchConditionID`,
+      [searchKey]
+    );
+    if (rows.length === 0) {
+      return null;
+    }
+    let searchName = this.toString(rows[0]['savedSearchName'], 'Saved Search');
+    let joinMode: JoinMode = 'all';
+    let conditions: SearchCondition[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      let condition = this.toString(rows[i]['condition'], '');
+      let operator = this.toString(rows[i]['operator'], '');
+      let value = this.toString(rows[i]['value'], '');
+      if (condition === 'joinMode') {
+        joinMode = value === 'any' ? 'any' : 'all';
+        continue;
+      }
+      if (condition.length === 0) {
+        continue;
+      }
+      conditions.push({
+        id: conditions.length + 1,
+        condition: condition,
+        operator: operator,
+        value: value,
+        required: this.toNumber(rows[i]['required']) > 0,
+      });
+    }
+    return {
+      key: searchKey,
+      name: searchName,
+      joinMode: joinMode,
+      conditions: conditions,
+    };
+  }
+
+  async updateItemField(itemKey: string, fieldName: string, value: string): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return;
+    }
+    await this.putItemField(itemID, fieldName, value);
+    await this.db.executeSql(
+      `UPDATE items SET synced = 0, clientDateModified = datetime('now'), dateModified = datetime('now')
+       WHERE itemID = ?`,
+      [itemID]
+    );
+  }
+
+  async replaceItemTags(itemKey: string, tags: ZoteroTag[]): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(`DELETE FROM itemTags WHERE itemID = ?`, [itemID]);
+      for (let i = 0; i < tags.length; i++) {
+        await this.db.executeSql(
+          `INSERT OR IGNORE INTO tags (name) VALUES (?)`, [tags[i].tag]
+        );
+        let tagID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT tagID FROM tags WHERE name = ?`, [tags[i].tag]
+        ));
+        await this.db.executeSql(
+          `INSERT OR REPLACE INTO itemTags (itemID, tagID, type) VALUES (?, ?, ?)`,
+          [itemID, tagID, tags[i].type]
+        );
+      }
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+        [itemID]
+      );
+    });
+  }
+
+  async listItemCollectionKeys(itemKey: string): Promise<string[]> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT c.key
+       FROM collectionItems ci
+       JOIN collections c ON c.collectionID = ci.collectionID
+       WHERE ci.itemID = ?
+       ORDER BY c.collectionName`,
+      [itemID]
+    );
+    let keys: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      let key = this.toString(rows[i]['key'], '');
+      if (key.length > 0) {
+        keys.push(key);
+      }
+    }
+    return keys;
+  }
+
+  async replaceItemCollections(itemKey: string, collectionKeys: string[]): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(`DELETE FROM collectionItems WHERE itemID = ?`, [itemID]);
+      for (let i = 0; i < collectionKeys.length; i++) {
+        let collectionID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+          [collectionKeys[i]]
+        ));
+        if (collectionID > 0) {
+          await this.db.executeSql(
+            `INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?, ?)`,
+            [collectionID, itemID]
+          );
+        }
+      }
+    });
+  }
+
+  async listRelatedItems(itemKey: string): Promise<RelatedItemRef[]> {
+    let relatedKeys = await this._listRelatedItemKeys(itemKey);
+    if (relatedKeys.length === 0) {
+      return [];
+    }
+    let relatedItems = await this.getItemsByKeys(relatedKeys);
+    let itemMap: Map<string, ItemModel> = new Map();
+    for (let i = 0; i < relatedItems.length; i++) {
+      let key = relatedItems[i].key ?? '';
+      if (key.length > 0) {
+        itemMap.set(key, relatedItems[i]);
+      }
+    }
+    let refs: RelatedItemRef[] = [];
+    for (let i = 0; i < relatedKeys.length; i++) {
+      let item = itemMap.get(relatedKeys[i]);
+      if (!item) {
+        continue;
+      }
+      refs.push({
+        key: item.key ?? '',
+        title: item.displayTitle ?? item.itemData.get('title') ?? '(untitled)',
+        itemType: item.itemData.get('itemType') ?? '',
+        creators: item.itemData.get('creator') ?? '',
+      });
+    }
+    return refs;
+  }
+
+  async addRelatedItems(itemKey: string, relatedKeys: string[]): Promise<void> {
+    if (itemKey.length === 0 || relatedKeys.length === 0) {
+      return;
+    }
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < relatedKeys.length; i++) {
+        let relatedKey = relatedKeys[i];
+        if (relatedKey.length === 0 || relatedKey === itemKey) {
+          continue;
+        }
+        let relatedID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [relatedKey]
+        ));
+        if (relatedID === 0) {
+          continue;
+        }
+        await this.db.executeSql(
+          `INSERT OR IGNORE INTO itemRelations (itemID, relatedItemID) VALUES (?, ?)`,
+          [itemID, relatedID]
+        );
+        await this.db.executeSql(
+          `INSERT OR IGNORE INTO itemRelations (itemID, relatedItemID) VALUES (?, ?)`,
+          [relatedID, itemID]
+        );
+      }
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+        [itemID]
+      );
+    });
+  }
+
+  async removeRelatedItem(itemKey: string, relatedKey: string): Promise<void> {
+    if (itemKey.length === 0 || relatedKey.length === 0) {
+      return;
+    }
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    let relatedID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [relatedKey]
+    ));
+    if (itemID === 0 || relatedID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `DELETE FROM itemRelations WHERE itemID = ? AND relatedItemID = ?`,
+        [itemID, relatedID]
+      );
+      await this.db.executeSql(
+        `DELETE FROM itemRelations WHERE itemID = ? AND relatedItemID = ?`,
+        [relatedID, itemID]
+      );
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+        [itemID]
+      );
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+        [relatedID]
+      );
+    });
+  }
+
+  async addItemsToCollection(itemKeys: string[], collectionKey: string): Promise<void> {
+    if (itemKeys.length === 0 || collectionKey.length === 0) {
+      return;
+    }
+    let collectionID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT collectionID FROM collections WHERE libraryID = 1 AND key = ?`,
+      [collectionKey]
+    ));
+    if (collectionID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      for (let i = 0; i < itemKeys.length; i++) {
+        let itemID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`,
+          [itemKeys[i]]
+        ));
+        if (itemID === 0) {
+          continue;
+        }
+        await this.db.executeSql(
+          `INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?, ?)`,
+          [collectionID, itemID]
+        );
+        await this.db.executeSql(
+          `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+          [itemID]
+        );
+      }
+    });
+  }
+
+  async mergeItems(itemKeys: string[]): Promise<string | null> {
+    let items = await this.getItemsByKeys(itemKeys);
+    if (items.length < 2) {
+      return null;
+    }
+    let survivor = items[0];
+    let survivorKey = survivor.key ?? '';
+    if (survivorKey.length === 0) {
+      return null;
+    }
+    let survivorTags = await this.getItemTags(survivorKey);
+    let survivorCollections = await this.listItemCollectionKeys(survivorKey);
+    let mergedTagMap: Map<string, ZoteroTag> = new Map();
+    for (let i = 0; i < survivorTags.length; i++) {
+      mergedTagMap.set(survivorTags[i].tag, survivorTags[i]);
+    }
+    let mergedCollections: string[] = [...survivorCollections];
+
+    for (let i = 1; i < items.length; i++) {
+      let source = items[i];
+      let sourceKey = source.key ?? '';
+      if (sourceKey.length === 0) {
+        continue;
+      }
+      let fieldNames: string[] = [];
+      source.itemData.forEach((_value: string, fieldName: string) => {
+        fieldNames.push(fieldName);
+      });
+      for (let j = 0; j < fieldNames.length; j++) {
+        let fieldName = fieldNames[j];
+        if ((survivor.itemData.get(fieldName) ?? '').length === 0) {
+          await this.updateItemField(survivorKey, fieldName, source.itemData.get(fieldName) ?? '');
+        }
+      }
+      let sourceTags = await this.getItemTags(sourceKey);
+      for (let t = 0; t < sourceTags.length; t++) {
+        mergedTagMap.set(sourceTags[t].tag, sourceTags[t]);
+      }
+      let sourceCollections = await this.listItemCollectionKeys(sourceKey);
+      for (let c = 0; c < sourceCollections.length; c++) {
+        if (mergedCollections.indexOf(sourceCollections[c]) < 0) {
+          mergedCollections.push(sourceCollections[c]);
+        }
+      }
+    }
+
+    await this.replaceItemTags(survivorKey, Array.from(mergedTagMap.values()));
+    await this.replaceItemCollections(survivorKey, mergedCollections);
+
+    for (let i = 1; i < items.length; i++) {
+      let sourceKey = items[i].key ?? '';
+      if (sourceKey.length > 0) {
+        await this.moveItemToTrash(sourceKey);
+      }
+    }
+    return survivorKey;
+  }
+
+  async listPendingStorageRequests(): Promise<StorageRequest[]> {
+    let rows = await this.db.queryAsync(
+      `SELECT i.itemID, i.key, ia.linkMode, ia.path, ia.contentType, ia.syncState
+       FROM itemAttachments ia
+       JOIN items i ON i.itemID = ia.itemID
+       WHERE ia.syncState != 1
+       ORDER BY i.dateModified DESC`
+    );
+    let requests: StorageRequest[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      requests.push({
+        itemID: this.toNumber(rows[i]['itemID']),
+        itemKey: this.toString(rows[i]['key'], ''),
+        operation: 'download',
+        linkMode: this.toNumber(rows[i]['linkMode']),
+        path: this.toString(rows[i]['path'], ''),
+        contentType: this.toString(rows[i]['contentType'], ''),
+      });
+    }
+    return requests;
+  }
+
+  async updateAttachmentSyncState(itemID: number, syncState: number): Promise<void> {
+    await this.db.executeSql(
+      `UPDATE itemAttachments SET syncState = ? WHERE itemID = ?`,
+      [syncState, itemID]
+    );
+  }
+
+  async updateAttachmentPath(itemID: number, path: string): Promise<void> {
+    await this.db.executeSql(
+      `UPDATE itemAttachments SET path = ?, synced = 0 WHERE itemID = ?`,
+      [path, itemID]
+    );
+  }
+
+  async moveItemToTrash(itemKey: string): Promise<void> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return;
+    }
+    await this.db.executeTransaction(async (): Promise<void> => {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO deletedItems (itemID, dateDeleted) VALUES (?, datetime('now'))`,
+        [itemID]
+      );
+      await this.db.executeSql(
+        `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+        [itemID]
+      );
+    });
+  }
+
+  async moveItemsToTrash(itemKeys: string[]): Promise<void> {
+    for (let i = 0; i < itemKeys.length; i++) {
+      await this.moveItemToTrash(itemKeys[i]);
+    }
+  }
+
+  async restoreItemsFromTrash(itemKeys: string[]): Promise<void> {
+    for (let i = 0; i < itemKeys.length; i++) {
+      let itemID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKeys[i]]
+      ));
+      if (itemID === 0) {
+        continue;
+      }
+      await this.db.executeTransaction(async (): Promise<void> => {
+        await this.db.executeSql(`DELETE FROM deletedItems WHERE itemID = ?`, [itemID]);
+        await this.db.executeSql(
+          `UPDATE items SET synced = 0, clientDateModified = datetime('now') WHERE itemID = ?`,
+          [itemID]
+        );
+      });
+    }
+  }
+
+  async upsertRemoteObject(objectType: RemoteObjectType, object: Record<string, Object>, libraryID: number = 1): Promise<void> {
+    let key = this.remoteString(object, 'key', '');
+    let version = this.remoteNumber(object, 'version', 0);
+    let data = this.remoteData(object);
+    if (key.length === 0) {
+      key = this.remoteString(data, 'key', '');
+    }
+    if (version === 0) {
+      version = this.remoteNumber(data, 'version', 0);
+    }
+    if (key.length === 0) {
+      return;
+    }
+    if (objectType === 'collection') {
+      await this.upsertRemoteCollection(key, version, data, libraryID);
+    } else if (objectType === 'search') {
+      await this.upsertRemoteSearch(key, version, data, libraryID);
+    } else {
+      await this.upsertRemoteItem(key, version, data, libraryID);
+    }
+  }
+
+  async applyRemoteDeletions(objectType: RemoteObjectType, keys: string[], libraryID: number = 1): Promise<void> {
+    for (let i = 0; i < keys.length; i++) {
+      if (objectType === 'item') {
+        let itemID = this.toNumber(await this.db.valueQueryAsync(
+          `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, keys[i]]
+        ));
+        if (itemID > 0) {
+          await this.db.executeSql(
+            `INSERT OR REPLACE INTO deletedItems (itemID, dateDeleted) VALUES (?, datetime('now'))`,
+            [itemID]
+          );
+        }
+      } else if (objectType === 'collection') {
+        await this.db.executeSql(
+          `DELETE FROM collections WHERE libraryID = ? AND key = ?`, [libraryID, keys[i]]
+        );
+      } else {
+        await this.db.executeSql(
+          `DELETE FROM savedSearches WHERE libraryID = ? AND key = ?`, [libraryID, keys[i]]
+        );
+      }
+    }
+  }
+
+  private async insertStarterItem(title: string, creator: string, itemType: string, date: string, publisher: string, collectionID: number): Promise<void> {
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [itemType]
+    ));
+    let key = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 32);
+    await this.db.executeSql(
+      `INSERT OR IGNORE INTO items (itemTypeID, libraryID, key, version, synced)
+       VALUES (?, 1, ?, 1, 1)`,
+      [typeID > 0 ? typeID : 1, key]
+    );
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [key]
+    ));
+    await this.db.executeSql(
+      `INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?, ?)`,
+      [collectionID, itemID]
+    );
+    await this.putItemField(itemID, 'title', title);
+    await this.putItemField(itemID, 'creator', creator);
+    await this.putItemField(itemID, 'itemType', itemType);
+    await this.putItemField(itemID, 'date', date);
+    await this.putItemField(itemID, 'publisher', publisher);
+  }
+
+  private async upsertRemoteCollection(key: string, version: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let name = this.remoteString(data, 'name', 'Untitled Collection');
+    let parentKey = this.remoteString(data, 'parentCollection', '');
+    let parentID: number | null = null;
+    if (parentKey.length > 0 && parentKey !== 'false') {
+      parentID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT collectionID FROM collections WHERE libraryID = ? AND key = ?`, [libraryID, parentKey]
+      ));
+      if (parentID === 0) { parentID = null; }
+    }
+    if (parentID === null) {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO collections
+         (collectionID, collectionName, parentCollectionID, libraryID, key, version, synced)
+         VALUES (
+           COALESCE((SELECT collectionID FROM collections WHERE libraryID = ? AND key = ?), NULL),
+           ?, NULL, ?, ?, ?, 1
+         )`,
+        [libraryID, key, name, libraryID, key, version]
+      );
+    } else {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO collections
+         (collectionID, collectionName, parentCollectionID, libraryID, key, version, synced)
+         VALUES (
+           COALESCE((SELECT collectionID FROM collections WHERE libraryID = ? AND key = ?), NULL),
+           ?, ?, ?, ?, ?, 1
+         )`,
+        [libraryID, key, name, parentID, libraryID, key, version]
+      );
+    }
+  }
+
+  private async upsertRemoteSearch(key: string, version: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let name = this.remoteString(data, 'name', 'Saved Search');
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO savedSearches
+       (savedSearchID, savedSearchName, libraryID, key, version, synced)
+       VALUES (
+         COALESCE((SELECT savedSearchID FROM savedSearches WHERE libraryID = ? AND key = ?), NULL),
+         ?, ?, ?, ?, 1
+       )`,
+      [libraryID, key, name, libraryID, key, version]
+    );
+  }
+
+  private async upsertRemoteItem(key: string, version: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let itemType = this.remoteString(data, 'itemType', 'journalArticle');
+    let typeID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemTypeID FROM itemTypes WHERE typeName = ?`, [itemType]
+    ));
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO items
+       (itemID, itemTypeID, libraryID, key, version, synced)
+       VALUES (
+         COALESCE((SELECT itemID FROM items WHERE libraryID = ? AND key = ?), NULL),
+         ?, ?, ?, ?, 1
+       )`,
+      [libraryID, key, typeID > 0 ? typeID : 1, libraryID, key, version]
+    );
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`, [libraryID, key]
+    ));
+    await this.putItemField(itemID, 'itemType', itemType);
+    let fieldKeys = Object.keys(data);
+    for (let i = 0; i < fieldKeys.length; i++) {
+      let fieldName = fieldKeys[i];
+      if (this.isScalarItemField(fieldName, data[fieldName])) {
+        await this.putItemField(itemID, fieldName, this.remoteValueToString(data[fieldName]));
+      }
+    }
+    await this.upsertRemoteItemCollections(itemID, data, libraryID);
+    await this.upsertRemoteItemTags(itemID, data);
+    await this.upsertRemoteItemRelations(itemID, data, libraryID);
+    await this.upsertRemoteAttachment(itemID, data);
+  }
+
+  private async upsertRemoteItemCollections(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    await this.db.executeSql(`DELETE FROM collectionItems WHERE itemID = ?`, [itemID]);
+    let collections = data['collections'] as string[] | undefined;
+    if (!collections) { return; }
+    for (let i = 0; i < collections.length; i++) {
+      let collectionID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT collectionID FROM collections WHERE libraryID = ? AND key = ?`, [libraryID, collections[i]]
+      ));
+      if (collectionID > 0) {
+        await this.db.executeSql(
+          `INSERT OR IGNORE INTO collectionItems (collectionID, itemID) VALUES (?, ?)`,
+          [collectionID, itemID]
+        );
+      }
+    }
+  }
+
+  private async upsertRemoteItemTags(itemID: number, data: Record<string, Object>): Promise<void> {
+    let tagObjects = data['tags'] as Record<string, Object>[] | undefined;
+    if (!tagObjects) { return; }
+    await this.db.executeSql(`DELETE FROM itemTags WHERE itemID = ?`, [itemID]);
+    for (let i = 0; i < tagObjects.length; i++) {
+      let tag = this.remoteString(tagObjects[i], 'tag', '');
+      if (tag.length === 0) { continue; }
+      let type = this.remoteNumber(tagObjects[i], 'type', 0);
+      await this.db.executeSql(`INSERT OR IGNORE INTO tags (name) VALUES (?)`, [tag]);
+      let tagID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT tagID FROM tags WHERE name = ?`, [tag]
+      ));
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemTags (itemID, tagID, type) VALUES (?, ?, ?)`,
+        [itemID, tagID, type]
+      );
+    }
+  }
+
+  private async upsertRemoteItemRelations(itemID: number, data: Record<string, Object>, libraryID: number): Promise<void> {
+    let relationMap = data['relations'] as Record<string, string[]> | undefined;
+    if (!relationMap) {
+      return;
+    }
+    let relatedKeys = relationMap['dc:relation'] ?? [];
+    if (relatedKeys.length === 0) {
+      return;
+    }
+    await this.db.executeSql(`DELETE FROM itemRelations WHERE itemID = ?`, [itemID]);
+    for (let i = 0; i < relatedKeys.length; i++) {
+      let relatedID = this.toNumber(await this.db.valueQueryAsync(
+        `SELECT itemID FROM items WHERE libraryID = ? AND key = ?`,
+        [libraryID, relatedKeys[i]]
+      ));
+      if (relatedID === 0 || relatedID === itemID) {
+        continue;
+      }
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO itemRelations (itemID, relatedItemID) VALUES (?, ?)`,
+        [itemID, relatedID]
+      );
+      await this.db.executeSql(
+        `INSERT OR IGNORE INTO itemRelations (itemID, relatedItemID) VALUES (?, ?)`,
+        [relatedID, itemID]
+      );
+    }
+  }
+
+  private async _listRelatedItemKeys(itemKey: string): Promise<string[]> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT i.key
+       FROM itemRelations r
+       JOIN items i ON i.itemID = r.relatedItemID
+       WHERE r.itemID = ?
+       ORDER BY i.dateModified DESC, i.itemID DESC`,
+      [itemID]
+    );
+    let relatedKeys: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      let key = this.toString(rows[i]['key'], '');
+      if (key.length > 0 && relatedKeys.indexOf(key) < 0) {
+        relatedKeys.push(key);
+      }
+    }
+    return relatedKeys;
+  }
+
+  private async upsertRemoteAttachment(itemID: number, data: Record<string, Object>): Promise<void> {
+    let linkMode = this.remoteString(data, 'linkMode', '');
+    if (linkMode.length === 0) { return; }
+    let mode = linkMode === 'linked_url' ? 3 : (linkMode === 'linked_file' ? 2 : 0);
+    let parentKey = this.remoteString(data, 'parentItem', '');
+    let parentID = parentKey.length > 0 ? this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE key = ?`, [parentKey]
+    )) : 0;
+    if (parentID > 0) {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemAttachments
+         (itemID, parentItemID, linkMode, contentType, path, syncState)
+         VALUES (?, ?, ?, ?, ?, 0)`,
+        [
+          itemID,
+          parentID,
+          mode,
+          this.remoteString(data, 'contentType', ''),
+          this.remoteString(data, 'path', this.remoteString(data, 'url', '')),
+        ]
+      );
+    } else {
+      await this.db.executeSql(
+        `INSERT OR REPLACE INTO itemAttachments
+         (itemID, parentItemID, linkMode, contentType, path, syncState)
+         VALUES (?, NULL, ?, ?, ?, 0)`,
+        [
+          itemID,
+          mode,
+          this.remoteString(data, 'contentType', ''),
+          this.remoteString(data, 'path', this.remoteString(data, 'url', '')),
+        ]
+      );
+    }
+  }
+
+  private async putItemField(itemID: number, fieldName: string, value: string): Promise<void> {
+    let fieldID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT fieldID FROM fields WHERE fieldName = ?`, [fieldName]
+    ));
+    if (fieldID === 0) {
+      return;
+    }
+    await this.db.executeSql(
+      `INSERT OR IGNORE INTO itemDataValues (value) VALUES (?)`, [value]
+    );
+    let valueID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT valueID FROM itemDataValues WHERE value = ?`, [value]
+    ));
+    await this.db.executeSql(
+      `INSERT OR REPLACE INTO itemData (itemID, fieldID, valueID) VALUES (?, ?, ?)`,
+      [itemID, fieldID, valueID]
+    );
+  }
+
+  private async attachTags(items: ItemModel[]): Promise<void> {
+    for (let i = 0; i < items.length; i++) {
+      let itemID = items[i].id ?? 0;
+      let rows = await this.db.queryAsync(
+        `SELECT t.name, it.type
+         FROM itemTags it
+         JOIN tags t ON t.tagID = it.tagID
+         WHERE it.itemID = ?
+         ORDER BY t.name`,
+        [itemID]
+      );
+      let tags: ZoteroTag[] = [];
+      for (let j = 0; j < rows.length; j++) {
+        tags.push({
+          tag: this.toString(rows[j]['name'], ''),
+          type: this.toNumber(rows[j]['type']),
+        });
+      }
+      items[i].tags = tags;
+    }
+  }
+
+  private async getItemTags(itemKey: string): Promise<ZoteroTag[]> {
+    let itemID = this.toNumber(await this.db.valueQueryAsync(
+      `SELECT itemID FROM items WHERE libraryID = 1 AND key = ?`, [itemKey]
+    ));
+    if (itemID === 0) {
+      return [];
+    }
+    let rows = await this.db.queryAsync(
+      `SELECT t.name, it.type
+       FROM itemTags it
+       JOIN tags t ON t.tagID = it.tagID
+       WHERE it.itemID = ?
+       ORDER BY t.name`,
+      [itemID]
+    );
+    let tags: ZoteroTag[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      tags.push({
+        tag: this.toString(rows[i]['name'], ''),
+        type: this.toNumber(rows[i]['type']),
+      });
+    }
+    return tags;
+  }
+
+  private async uniqueKey(tableName: string, source: string): Promise<string> {
+    let base = this.slug(source);
+    if (base.length === 0) {
+      base = 'zotero';
+    }
+    let candidate = base.substring(0, 28);
+    let suffix = 0;
+    while (await this.keyExists(tableName, candidate)) {
+      suffix++;
+      candidate = `${base.substring(0, 24)}-${suffix}`;
+    }
+    return candidate;
+  }
+
+  private async keyExists(tableName: string, key: string): Promise<boolean> {
+    let count = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM ${tableName} WHERE libraryID = 1 AND key = ?`, [key]
+    );
+    return this.toNumber(count) > 0;
+  }
+
+  private slug(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  private appendCollectionChildren(target: CollectionTreeRow[], source: Row[], parentID: number | null, level: number): void {
+    for (let i = 0; i < source.length; i++) {
+      let rowParent = this.toNullableNumber(source[i]['parentCollectionID']);
+      if (rowParent !== parentID) {
+        continue;
+      }
+      let collectionID = this.toNumber(source[i]['collectionID']);
+      let rowID = `C${collectionID}`;
+      target.push({
+        id: rowID,
+        type: 'collection',
+        name: this.toString(source[i]['collectionName'], 'Untitled Collection'),
+        level: level,
+        isOpen: level === 1,
+        hasChildren: this.hasCollectionChildren(source, collectionID),
+        libraryID: this.toNumber(source[i]['libraryID']),
+        key: this.toString(source[i]['key'], ''),
+        parentRowID: parentID === null ? 'L1' : `C${parentID}`,
+      });
+      this.appendCollectionChildren(target, source, collectionID, level + 1);
+    }
+  }
+
+  private hasCollectionChildren(source: Row[], collectionID: number): boolean {
+    for (let i = 0; i < source.length; i++) {
+      if (this.toNullableNumber(source[i]['parentCollectionID']) === collectionID) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private creatorName(row: Row): string {
+    let lastName = this.toString(row['lastName'], '');
+    let firstName = this.toString(row['firstName'], '');
+    if (lastName.length > 0 && firstName.length > 0) {
+      return `${lastName}, ${firstName}`;
+    }
+    return lastName.length > 0 ? lastName : firstName;
+  }
+
+  private remoteData(object: Record<string, Object>): Record<string, Object> {
+    let data = object['data'] as Record<string, Object> | undefined;
+    return data ?? object;
+  }
+
+  private remoteString(object: Record<string, Object>, key: string, fallback: string): string {
+    let value = object[key];
+    if (value === undefined || value === null || typeof value === 'object') {
+      return fallback;
+    }
+    return `${value}`;
+  }
+
+  private remoteNumber(object: Record<string, Object>, key: string, fallback: number): number {
+    let value = object[key];
+    if (value === undefined || value === null) {
+      return fallback;
+    }
+    if (typeof value === 'number') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      let parsed = Number.parseInt(value, 10);
+      return parsed !== parsed ? fallback : parsed;
+    }
+    return fallback;
+  }
+
+  private toAnnotationType(value: string): 'highlight' | 'underline' | 'note' | 'image' | 'ink' {
+    if (value === 'underline' || value === 'note' || value === 'image' || value === 'ink') {
+      return value;
+    }
+    return 'highlight';
+  }
+
+  private remoteValueToString(value: Object): string {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return `${value}`;
+    }
+    return '';
+  }
+
+  private isScalarItemField(fieldName: string, value: Object): boolean {
+    if (fieldName === 'key' || fieldName === 'version' || fieldName === 'collections' ||
+      fieldName === 'creators' || fieldName === 'tags' || fieldName === 'relations') {
+      return false;
+    }
+    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  }
+
+  private toString(value: string | number | null, fallback: string): string {
+    if (value === null || value === undefined) {
+      return fallback;
+    }
+    return `${value}`;
+  }
+
+  private toNumber(value: string | number | null): number {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    if (typeof value === 'number') {
+      return value;
+    }
+    let parsed = Number.parseInt(value, 10);
+    return parsed !== parsed ? 0 : parsed;
+  }
+
+  private toFloat(value: string | number | null): number {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    if (typeof value === 'number') {
+      return value;
+    }
+    let parsed = Number.parseFloat(value);
+    return parsed !== parsed ? 0 : parsed;
+  }
+
+  private toNullableNumber(value: string | number | null): number | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    let parsed = this.toNumber(value);
+    return parsed === 0 ? null : parsed;
+  }
+
+  private fileNameFromUri(uri: string): string {
+    let cleaned = uri.split('?')[0];
+    let segments = cleaned.split('/');
+    let last = segments[segments.length - 1] ?? '';
+    if (last.length === 0) {
+      return 'Imported File';
+    }
+    try {
+      return decodeURIComponent(last);
+    } catch (_err) {
+      return last;
+    }
+  }
+
+  private guessContentType(fileName: string): string {
+    let ext = fileName.toLowerCase().split('.').pop() ?? '';
+    if (ext === 'pdf') { return 'application/pdf'; }
+    if (ext === 'html' || ext === 'htm') { return 'text/html'; }
+    if (ext === 'txt' || ext === 'md') { return 'text/plain'; }
+    if (ext === 'jpg' || ext === 'jpeg') { return 'image/jpeg'; }
+    if (ext === 'png') { return 'image/png'; }
+    if (ext === 'gif') { return 'image/gif'; }
+    if (ext === 'svg') { return 'image/svg+xml'; }
+    return 'application/octet-stream';
+  }
+
+  private linkModeName(linkMode: number): string {
+    if (linkMode === 0) { return 'imported_file'; }
+    if (linkMode === 1) { return 'imported_url'; }
+    if (linkMode === 3) { return 'linked_url'; }
+    return 'linked_file';
+  }
+}

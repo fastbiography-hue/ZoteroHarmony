@@ -1,0 +1,60 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Zotero Reference Manager - Entry Module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Zotero Main Ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Zotero"
+    },
+    {
+      "name": "perm_internet_reason",
+      "value": "Required for syncing with Zotero cloud service and downloading metadata"
+    },
+    {
+      "name": "perm_network_info_reason",
+      "value": "Required to detect network availability for sync operations"
+    },
+    {
+      "name": "perm_background_reason",
+      "value": "Required for background file sync and auto-sync timer"
+    },
+    {
+      "name": "perm_read_media_reason",
+      "value": "Required to import PDF attachments from device storage"
+    },
+    {
+      "name": "perm_write_media_reason",
+      "value": "Required to export library data and save attachments"
+    },
+    {
+      "name": "perm_download_reason",
+      "value": "Required to download file attachments during sync"
+    },
+    {
+      "name": "perm_file_persist_reason",
+      "value": "Required to maintain file access across sessions for linked attachments"
+    },
+    {
+      "name": "perm_bundle_dir_reason",
+      "value": "Required for local database and configuration file storage"
+    },
+    {
+      "name": "perm_pasteboard_reason",
+      "value": "Required for Copy Citation and Quick Copy functionality"
+    },
+    {
+      "name": "perm_notification_reason",
+      "value": "Required to show sync progress and error notifications"
+    },
+    {
+      "name": "perm_vibrate_reason",
+      "value": "Required for haptic feedback on long-press actions"
+    }
+  ]
+}

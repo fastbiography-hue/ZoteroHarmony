@@ -1,0 +1,12 @@
+{
+  "src": [
+    "pages/LoginPage",
+    "pages/MainPage",
+    "pages/ImportExportPage",
+    "pages/PreferencesPage",
+    "pages/SearchPage",
+    "pages/AddToCollectionPage",
+    "pages/SelectItemsDialog",
+    "reader/ReaderPage"
+  ]
+}

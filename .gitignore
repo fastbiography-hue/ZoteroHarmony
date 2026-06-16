@@ -1,0 +1,13 @@
+node_modules/
+oh_modules/
+.cxx/
+.hvigor/
+**/build/
+.preview/
+*.p12
+*.p7b
+.idea/
+*.iml
+.DS_Store
+local.properties
+Thumbs.db
